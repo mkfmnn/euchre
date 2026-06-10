@@ -7,27 +7,28 @@
 //! sanity check that a smarter agent actually beats noise.
 
 use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Suit, UpcardBid};
-
-use crate::rng::Rng;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+use rand::seq::IndexedRandom;
 
 /// An agent that selects a legal option uniformly at random at every decision.
 #[derive(Debug, Clone)]
 pub struct RandomAgent {
-    rng: Rng,
+    rng: SmallRng,
 }
 
 impl RandomAgent {
     /// Creates a random agent seeded from system entropy.
     pub fn new() -> Self {
         RandomAgent {
-            rng: Rng::from_entropy(),
+            rng: SmallRng::from_rng(&mut rand::rng()),
         }
     }
 
     /// Creates a random agent with a fixed seed, for reproducible play.
     pub fn with_seed(seed: u64) -> Self {
         RandomAgent {
-            rng: Rng::new(seed),
+            rng: SmallRng::seed_from_u64(seed),
         }
     }
 
@@ -52,7 +53,7 @@ impl Agent for RandomAgent {
             UpcardBid::OrderUp(Bid::WithPartner),
             UpcardBid::OrderUp(Bid::Alone),
         ];
-        *self.rng.choose(&options)
+        *options.choose(&mut self.rng).expect("options is non-empty")
     }
 
     fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
@@ -75,15 +76,15 @@ impl Agent for RandomAgent {
                 bid: Bid::Alone,
             });
         }
-        *self.rng.choose(&options)
+        *options.choose(&mut self.rng).expect("options is non-empty")
     }
 
     fn discard(&mut self, view: &GameView<'_>) -> Card {
-        *self.rng.choose(view.hand)
+        *view.hand.choose(&mut self.rng).expect("hand is non-empty")
     }
 
     fn play_card(&mut self, _view: &GameView<'_>, legal: &[Card]) -> Card {
-        *self.rng.choose(legal)
+        *legal.choose(&mut self.rng).expect("legal is non-empty")
     }
 }
 

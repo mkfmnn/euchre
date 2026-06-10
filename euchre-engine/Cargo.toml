@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 euchre-interface = { path = "../euchre-interface" }
+rand = { version = "0.10.1", features = ["chacha"] }

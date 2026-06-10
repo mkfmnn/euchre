@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 euchre-interface = { path = "../euchre-interface" }
+rand = "0.10.1"
 
 [dev-dependencies]
 euchre-engine = { path = "../euchre-engine" }

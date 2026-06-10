@@ -35,6 +35,9 @@ use std::io::{self, BufRead, BufReader, Empty, Write};
 use euchre_interface::{
     Agent, Bid, CallBid, Card, HandResult, Scores, Seat, Suit, Team, Trick, UpcardBid,
 };
+use rand::SeedableRng;
+use rand::rngs::ChaCha12Rng;
+use rand::seq::SliceRandom;
 
 use crate::game::{Action, Decision, Game, GameConfig, seat_index};
 
@@ -76,7 +79,7 @@ pub struct Driver<'a, R: BufRead, W: Write> {
     verbosity: Verbosity,
     input: R,
     output: W,
-    rng: Rng,
+    rng: ChaCha12Rng,
 }
 
 impl<'a, W: Write> Driver<'a, BufReader<Empty>, W> {
@@ -103,7 +106,7 @@ impl<'a, W: Write> Driver<'a, BufReader<Empty>, W> {
 
 impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
     /// Builds a driver over explicit input/output streams, seeding the shuffler
-    /// from the system clock.
+    /// from system entropy.
     ///
     /// For a human at a real terminal, pass `std::io::stdin().lock()` and
     /// `std::io::stdout()`.
@@ -114,7 +117,14 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         input: R,
         output: W,
     ) -> Self {
-        Driver::with_seed(config, players, verbosity, input, output, default_seed())
+        Driver::with_rng(
+            config,
+            players,
+            verbosity,
+            input,
+            output,
+            ChaCha12Rng::from_rng(&mut rand::rng()),
+        )
     }
 
     /// Like [`Driver::new`] but with a fixed shuffler seed, for reproducible
@@ -127,8 +137,29 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         output: W,
         seed: u64,
     ) -> Self {
-        let mut rng = Rng::new(seed);
-        let game = Game::new(config, rng.deal());
+        Driver::with_rng(
+            config,
+            players,
+            verbosity,
+            input,
+            output,
+            ChaCha12Rng::seed_from_u64(seed),
+        )
+    }
+
+    /// Shared constructor: deals the first hand from `rng` and assembles the
+    /// driver. The ChaCha12 shuffler is for game variety, not cryptographic
+    /// security; seeding it explicitly (see [`Driver::with_seed`]) makes a whole
+    /// match reproducible.
+    fn with_rng(
+        config: GameConfig,
+        players: [Player<'a>; 4],
+        verbosity: Verbosity,
+        input: R,
+        output: W,
+        mut rng: ChaCha12Rng,
+    ) -> Self {
+        let game = Game::new(config, deal(&mut rng));
         Driver {
             game,
             players,
@@ -196,7 +227,7 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
                             hands_played,
                         });
                     }
-                    let deck = self.rng.deal();
+                    let deck = deal(&mut self.rng);
                     self.game
                         .start_next_hand(deck)
                         .expect("ready for next hand");
@@ -625,50 +656,11 @@ fn team_name(team: Team) -> &'static str {
 
 // --- Shuffling ---------------------------------------------------------------
 
-/// A small, dependency-free PRNG (SplitMix64) used to shuffle and deal.
-///
-/// This is for game variety, not cryptographic security. Seeding it explicitly
-/// (see [`Driver::with_seed`]) makes a whole match reproducible.
-#[derive(Debug, Clone)]
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        // Avoid a zero state degenerating the first few outputs.
-        Rng(seed ^ 0x9E37_79B9_7F4A_7C15)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// A uniform index in `0..n` (for the small `n` used in shuffling).
-    fn below(&mut self, n: usize) -> usize {
-        (self.next_u64() % n as u64) as usize
-    }
-
-    /// A freshly shuffled 24-card deck.
-    fn deal(&mut self) -> [Card; 24] {
-        let mut cards = Card::deck();
-        // Fisher–Yates.
-        for i in (1..cards.len()).rev() {
-            let j = self.below(i + 1);
-            cards.swap(i, j);
-        }
-        cards.try_into().expect("Card::deck yields 24 cards")
-    }
-}
-
-fn default_seed() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x1234_5678_9ABC_DEF0)
+/// A freshly shuffled 24-card deck, drawn from the driver's ChaCha12 generator.
+fn deal(rng: &mut ChaCha12Rng) -> [Card; 24] {
+    let mut cards = Card::deck();
+    cards.shuffle(rng);
+    cards.try_into().expect("Card::deck yields 24 cards")
 }
 
 #[cfg(test)]
@@ -807,10 +799,10 @@ mod tests {
 
     #[test]
     fn shuffle_is_deterministic_for_a_fixed_seed() {
-        let mut a = Rng::new(99);
-        let mut b = Rng::new(99);
-        assert_eq!(a.deal(), b.deal());
-        let mut c = Rng::new(100);
-        assert_ne!(a.deal(), c.deal());
+        let mut a = ChaCha12Rng::seed_from_u64(99);
+        let mut b = ChaCha12Rng::seed_from_u64(99);
+        assert_eq!(deal(&mut a), deal(&mut b));
+        let mut c = ChaCha12Rng::seed_from_u64(100);
+        assert_ne!(deal(&mut a), deal(&mut c));
     }
 }

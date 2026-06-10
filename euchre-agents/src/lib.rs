@@ -45,8 +45,6 @@
 
 pub mod heuristic;
 pub mod random;
-pub mod rng;
 
 pub use heuristic::HeuristicAgent;
 pub use random::RandomAgent;
-pub use rng::Rng;
