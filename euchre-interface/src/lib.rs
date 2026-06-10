@@ -51,6 +51,6 @@ pub mod agent;
 pub mod card;
 pub mod game;
 
-pub use agent::{Agent, Bid, CallBid, HandResult, UpcardBid};
+pub use agent::{Agent, Bid, CallBid, HandResult, HandScore, UpcardBid};
 pub use card::{Card, Color, Rank, Suit};
-pub use game::{Contract, GameView, Play, Scores, Seat, Team, Trick};
+pub use game::{Contract, GameRules, GameView, Play, Scores, Seat, Team, Trick};

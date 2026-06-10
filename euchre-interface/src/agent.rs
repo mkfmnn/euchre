@@ -119,10 +119,20 @@ pub trait Agent {
     fn observe_hand_end(&mut self, _view: &GameView<'_>, _result: &HandResult) {}
 }
 
-/// A summary of how a completed hand was scored, delivered to
-/// [`Agent::observe_hand_end`].
+/// How a completed hand turned out, delivered to [`Agent::observe_hand_end`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandResult {
+pub enum HandResult {
+    /// Every seat passed in both bidding rounds, so no trump was named and the
+    /// hand was thrown in without being played. No points are awarded.
+    PassedOut,
+    /// Trump was named and the hand was played out. See [`HandScore`] for the
+    /// scoring details.
+    Played(HandScore),
+}
+
+/// A summary of how a played-out hand was scored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandScore {
     /// The team that named trump for this hand.
     pub makers: crate::game::Team,
     /// Tricks won by the makers (0..=5).
@@ -141,7 +151,7 @@ pub struct HandResult {
 mod tests {
     use super::*;
     use crate::card::{Card, Rank, Suit};
-    use crate::game::{GameView, Scores, Seat, Trick};
+    use crate::game::{GameRules, GameView, Scores, Seat, Trick};
 
     /// A trivial agent used to prove the trait is object-safe and usable.
     struct FirstLegalAgent;
@@ -178,6 +188,7 @@ mod tests {
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
+            rules: GameRules::default(),
         }
     }
 

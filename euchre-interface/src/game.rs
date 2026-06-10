@@ -149,6 +149,18 @@ impl Contract {
     }
 }
 
+/// The house rules in effect for a match.
+///
+/// Euchre is played with a number of optional rule variations; this collects
+/// the ones the engine supports so agents can adjust their strategy to them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameRules {
+    /// Whether "stick the dealer" is in effect: if every seat passes the first
+    /// round and every non-dealer seat passes the second, the dealer is forced
+    /// to name a trump suit rather than being allowed to pass it out.
+    pub stick_the_dealer: bool,
+}
+
 /// A read-only view of everything an agent legitimately knows when it is asked
 /// to make a decision.
 ///
@@ -177,6 +189,8 @@ pub struct GameView<'a> {
     pub completed_tricks: &'a [(Trick, Seat)],
     /// Cumulative match score for each team.
     pub scores: Scores,
+    /// The house rules in effect for this match.
+    pub rules: GameRules,
 }
 
 impl GameView<'_> {
