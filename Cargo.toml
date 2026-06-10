@@ -2,5 +2,6 @@
 members = [
     "euchre-interface",
     "euchre-engine",
+    "euchre-agents",
 ]
 resolver = "2"
