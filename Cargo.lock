@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "euchre-engine"
 version = "0.1.0"
+dependencies = [
+ "euchre-interface",
+]
 
 [[package]]
 name = "euchre-interface"
