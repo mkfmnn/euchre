@@ -45,22 +45,23 @@
 pub mod runner;
 pub mod stats;
 
-use euchre_agents::{HeuristicAgent, RandomAgent};
+use euchre_agents::{AdvancedAgent, HeuristicAgent, RandomAgent};
 use euchre_interface::Agent;
 use runner::{AgentFactory, Contestant};
 
 /// Builds a contestant for a built-in agent by name, or `None` if unknown.
 ///
-/// Recognised names are `"random"` and `"heuristic"`. New agents should be added
-/// here so the CLI and any tooling can name them.
+/// Recognised names are `"random"`, `"heuristic"`, and `"advanced"`. New agents
+/// should be added here so the CLI and any tooling can name them.
 pub fn builtin(name: &str) -> Option<Contestant> {
     let factory: AgentFactory = match name {
         "random" => Box::new(|seed| Box::new(RandomAgent::with_seed(seed)) as Box<dyn Agent>),
         "heuristic" => Box::new(|_seed| Box::new(HeuristicAgent::new()) as Box<dyn Agent>),
+        "advanced" => Box::new(|_seed| Box::new(AdvancedAgent::new()) as Box<dyn Agent>),
         _ => return None,
     };
     Some(Contestant::new(name, factory))
 }
 
 /// The names of every built-in agent, for help text and listings.
-pub const BUILTIN_AGENTS: &[&str] = &["random", "heuristic"];
+pub const BUILTIN_AGENTS: &[&str] = &["random", "heuristic", "advanced"];
