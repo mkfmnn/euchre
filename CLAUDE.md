@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Overview
 
 A Euchre engine and multiplayer server in Rust, organized as a Cargo workspace
@@ -16,8 +14,8 @@ all other cards, and the left bower counts as trump, not its printed suit.
 cargo build --workspace          # build everything
 cargo test --workspace           # run all tests
 cargo test -p euchre-engine      # test one crate
-cargo test -p euchre-agents vs_random   # one integration test target
-cargo test --workspace test_name        # run a single test by name
+cargo test -p euchre-agents --test vs_random  # one integration test target (by file name)
+cargo test --workspace test_name        # run a single test by name (substring filter)
 cargo clippy --workspace --all-targets  # lint
 cargo fmt                        # format
 
