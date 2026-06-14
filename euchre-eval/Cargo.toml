@@ -7,6 +7,7 @@ edition = "2024"
 euchre-interface = { path = "../euchre-interface" }
 euchre-engine = { path = "../euchre-engine" }
 euchre-agents = { path = "../euchre-agents" }
+clap = { version = "4.6.1", features = ["derive"] }
 
 [[bin]]
 name = "euchre-eval"
