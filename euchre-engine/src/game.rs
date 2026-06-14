@@ -40,6 +40,7 @@ const TRICKS_PER_HAND: usize = 5;
 
 /// The fixed setup for a match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GameConfig {
     /// The optional house rules in effect.
     pub rules: GameRules,
@@ -85,6 +86,7 @@ enum Phase {
 /// collect its decision, and submit the matching [`Decision`] to
 /// [`Game::apply`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Action {
     /// First bidding round. `seat` may order up `up_card`'s suit as trump or
     /// pass. Answered with [`Decision::Upcard`].
@@ -112,6 +114,7 @@ pub enum Action {
 
 /// A player's answer to an [`Action`], submitted via [`Game::apply`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Decision {
     /// Answers [`Action::BidUpcard`].
     Upcard(UpcardBid),

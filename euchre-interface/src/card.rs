@@ -18,6 +18,7 @@ pub enum Color {
 
 /// One of the four suits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Suit {
     Clubs,
     Diamonds,
@@ -57,6 +58,28 @@ impl Suit {
             Suit::Spades => '♠',
         }
     }
+
+    /// The single ASCII letter identifying this suit (`C`/`D`/`H`/`S`), used in
+    /// the compact card code on the wire.
+    pub const fn code(self) -> char {
+        match self {
+            Suit::Clubs => 'C',
+            Suit::Diamonds => 'D',
+            Suit::Hearts => 'H',
+            Suit::Spades => 'S',
+        }
+    }
+
+    /// Parses a suit from its [`code`](Suit::code) letter (case-sensitive).
+    pub const fn from_code(c: char) -> Option<Suit> {
+        Some(match c {
+            'C' => Suit::Clubs,
+            'D' => Suit::Diamonds,
+            'H' => Suit::Hearts,
+            'S' => Suit::Spades,
+            _ => return None,
+        })
+    }
 }
 
 impl fmt::Display for Suit {
@@ -76,6 +99,7 @@ impl fmt::Display for Suit {
 /// with `Nine` lowest and `Ace` highest. Note that this ordering does **not**
 /// account for bowers; use [`Card::trump_strength`] for trump-aware comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Rank {
     Nine,
     Ten,
@@ -107,6 +131,33 @@ impl Rank {
             Rank::Ace => "A",
         }
     }
+
+    /// The single ASCII character identifying this rank (`9TJQKA`), used in the
+    /// compact card code on the wire. Note Ten is `T`, not `10`, to keep every
+    /// card code exactly two characters.
+    pub const fn code(self) -> char {
+        match self {
+            Rank::Nine => '9',
+            Rank::Ten => 'T',
+            Rank::Jack => 'J',
+            Rank::Queen => 'Q',
+            Rank::King => 'K',
+            Rank::Ace => 'A',
+        }
+    }
+
+    /// Parses a rank from its [`code`](Rank::code) character (case-sensitive).
+    pub const fn from_code(c: char) -> Option<Rank> {
+        Some(match c {
+            '9' => Rank::Nine,
+            'T' => Rank::Ten,
+            'J' => Rank::Jack,
+            'Q' => Rank::Queen,
+            'K' => Rank::King,
+            'A' => Rank::Ace,
+            _ => return None,
+        })
+    }
 }
 
 impl fmt::Display for Rank {
@@ -126,6 +177,28 @@ impl Card {
     /// Constructs a card.
     pub const fn new(rank: Rank, suit: Suit) -> Self {
         Card { rank, suit }
+    }
+
+    /// The compact two-character code for this card, rank letter then suit
+    /// letter (e.g. `"JS"`, `"TH"`, `"9C"`). This is the wire representation.
+    pub fn code(self) -> String {
+        let mut s = String::with_capacity(2);
+        s.push(self.rank.code());
+        s.push(self.suit.code());
+        s
+    }
+
+    /// Parses a card from its two-character [`code`](Card::code). Returns `None`
+    /// for anything that is not exactly a valid rank letter followed by a valid
+    /// suit letter.
+    pub fn from_code(s: &str) -> Option<Card> {
+        let mut chars = s.chars();
+        let rank = Rank::from_code(chars.next()?)?;
+        let suit = Suit::from_code(chars.next()?)?;
+        if chars.next().is_some() {
+            return None;
+        }
+        Some(Card::new(rank, suit))
     }
 
     /// The full 24-card Euchre deck, in a stable order.
@@ -208,6 +281,26 @@ impl fmt::Display for Card {
     }
 }
 
+// A `Card` serializes as its compact two-character code (e.g. `"JS"`) rather
+// than the default `{ "rank": ..., "suit": ... }` struct, for a terse, readable
+// wire format. `Rank` and `Suit` keep their derived (named) representations for
+// standalone use elsewhere in the protocol.
+#[cfg(feature = "serde")]
+impl serde::Serialize for Card {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.code())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Card {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Card::from_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid card code: {code:?}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +352,30 @@ mod tests {
         assert!(left.trump_strength(trump, led) > ace_trump.trump_strength(trump, led));
         assert!(ace_trump.trump_strength(trump, led) > nine_trump.trump_strength(trump, led));
         assert!(nine_trump.trump_strength(trump, led) > off_ace.trump_strength(trump, led));
+    }
+
+    #[test]
+    fn card_code_round_trips_over_the_whole_deck() {
+        for card in Card::deck() {
+            let code = card.code();
+            assert_eq!(code.len(), 2, "code is two chars: {code}");
+            assert_eq!(Card::from_code(&code), Some(card));
+        }
+        // Ten is encoded as `T`, keeping codes two characters wide.
+        assert_eq!(Card::new(Rank::Ten, Suit::Hearts).code(), "TH");
+        assert_eq!(Card::from_code(""), None);
+        assert_eq!(Card::from_code("10H"), None);
+        assert_eq!(Card::from_code("ZZ"), None);
+        assert_eq!(Card::from_code("JSX"), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn card_serializes_as_a_two_char_string() {
+        let card = Card::new(Rank::Jack, Suit::Spades);
+        let json = serde_json::to_string(&card).unwrap();
+        assert_eq!(json, "\"JS\"");
+        assert_eq!(serde_json::from_str::<Card>(&json).unwrap(), card);
     }
 
     #[test]

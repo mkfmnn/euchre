@@ -3,5 +3,6 @@ members = [
     "euchre-interface",
     "euchre-engine",
     "euchre-agents",
+    "euchre-server",
 ]
 resolver = "2"

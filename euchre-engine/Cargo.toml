@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 euchre-interface = { path = "../euchre-interface" }
 rand = { version = "0.10.1", features = ["chacha"] }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde", "euchre-interface/serde"]

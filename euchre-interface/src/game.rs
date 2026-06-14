@@ -9,6 +9,7 @@ use crate::card::{Card, Suit};
 /// Seats `North`/`South` form one team and `East`/`West` form the other, so
 /// partners sit across from each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Seat {
     North,
     East,
@@ -52,6 +53,7 @@ impl Seat {
 
 /// One of the two partnerships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Team {
     NorthSouth,
     EastWest,
@@ -69,6 +71,7 @@ impl Team {
 
 /// A card played into the current trick, tagged with the seat that played it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Play {
     pub seat: Seat,
     pub card: Card,
@@ -79,6 +82,7 @@ pub struct Play {
 /// Plays are stored in the order they were made; the first play establishes the
 /// led suit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Trick {
     plays: Vec<Play>,
 }
@@ -129,6 +133,7 @@ impl Trick {
 
 /// How a hand's trump was decided, including whether the maker went alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Contract {
     /// The chosen trump suit.
     pub trump: Suit,
@@ -154,6 +159,7 @@ impl Contract {
 /// Euchre is played with a number of optional rule variations; this collects
 /// the ones the engine supports so agents can adjust their strategy to them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GameRules {
     /// Whether "stick the dealer" is in effect: if every seat passes the first
     /// round and every non-dealer seat passes the second, the dealer is forced
@@ -202,6 +208,7 @@ impl GameView<'_> {
 
 /// Cumulative match scores for both teams.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scores {
     pub north_south: u8,
     pub east_west: u8,
