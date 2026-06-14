@@ -37,7 +37,6 @@ use euchre_interface::{
 };
 use rand::SeedableRng;
 use rand::rngs::ChaCha12Rng;
-use rand::seq::SliceRandom;
 
 use crate::game::{Action, Decision, Game, GameConfig, seat_index};
 
@@ -657,10 +656,11 @@ fn team_name(team: Team) -> &'static str {
 // --- Shuffling ---------------------------------------------------------------
 
 /// A freshly shuffled 24-card deck, drawn from the driver's ChaCha12 generator.
+///
+/// Thin wrapper over [`crate::shuffle::deal`] so the driver and a server deal
+/// the same way.
 fn deal(rng: &mut ChaCha12Rng) -> [Card; 24] {
-    let mut cards = Card::deck();
-    cards.shuffle(rng);
-    cards.try_into().expect("Card::deck yields 24 cards")
+    crate::shuffle::deal(rng)
 }
 
 #[cfg(test)]

@@ -71,9 +71,11 @@
 
 pub mod driver;
 pub mod game;
+pub mod shuffle;
 
 pub use driver::{Driver, Outcome, Player, Verbosity};
 pub use game::{Action, ApplyError, Decision, Game, GameConfig};
+pub use shuffle::deal;
 
 // Re-export the interface so downstream code can use one crate. The whole crate
 // is available as `euchre_engine::interface`, with the most common types lifted

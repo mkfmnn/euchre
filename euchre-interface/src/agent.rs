@@ -29,6 +29,7 @@ use crate::game::GameView;
 /// An agent's choice in the first round of bidding, when the up-card's suit is
 /// the candidate trump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UpcardBid {
     /// Decline to make the up-card's suit trump and let the auction continue.
     Pass,
@@ -38,6 +39,7 @@ pub enum UpcardBid {
 
 /// An agent's choice in the second round of bidding, when it may name a suit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CallBid {
     /// Decline to name a trump suit.
     Pass,
@@ -50,6 +52,7 @@ pub enum CallBid {
 
 /// Whether the maker plays with or without their partner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Bid {
     /// Play normally, with the partner participating.
     WithPartner,
@@ -121,6 +124,7 @@ pub trait Agent {
 
 /// How a completed hand turned out, delivered to [`Agent::observe_hand_end`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandResult {
     /// Every seat passed in both bidding rounds, so no trump was named and the
     /// hand was thrown in without being played. No points are awarded.
@@ -132,6 +136,7 @@ pub enum HandResult {
 
 /// A summary of how a played-out hand was scored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HandScore {
     /// The team that named trump for this hand.
     pub makers: crate::game::Team,
