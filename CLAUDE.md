@@ -21,6 +21,9 @@ cargo fmt                        # format
 
 cargo run -p euchre-server                       # serve one table on EUCHRE_ADDR (default 127.0.0.1:8080), route /ws
 cargo run -p euchre-server --example cli_client  # connect a terminal client to it
+
+cargo run -p euchre-eval -- heuristic random              # score one agent against another
+cargo run -p euchre-eval -- heuristic random --sprt       # stop early once the result is decided
 ```
 
 There is no CI config; run `cargo test`, `cargo clippy`, and `cargo fmt`
@@ -28,9 +31,9 @@ locally before considering work done.
 
 ## Architecture
 
-Four crates form a dependency chain `interface → engine → agents → server`.
-Keep concerns in their layer — e.g. don't add randomness to the core, don't add
-strategies to the engine.
+Five crates build on the chain `interface → engine → agents`, with `server` and
+`eval` as two consumers of `agents`. Keep concerns in their layer — e.g. don't
+add randomness to the core, don't add strategies to the engine.
 
 ### `euchre-interface` — shared vocabulary, no logic
 
@@ -96,6 +99,31 @@ mix of connected humans and server-side bots, interchangeable to the engine.
   on the wire — a `Discard` rebroadcast carries no card.
 - **`view.rs`** — translation between protocol types and engine types.
 - **`lib.rs`** — `router`/`serve` wire one room into an Axum app at `/ws`.
+
+### `euchre-eval` — agent evaluation harness
+
+Measures whether one `Agent` wins more matches than another. The objective is
+**match-win probability, not points**: skilled Euchre is score-aware (sandbag a
+lead, gamble from behind), so a points metric would punish good play. Matches
+therefore run to the real target score and are scored purely on who won.
+
+- **`runner.rs`** — match execution and variance reduction. Agents are supplied
+  as factories (`AgentFactory`), not instances, so every match gets a fresh,
+  cleanly-seeded agent (needed for stateful learners and stochastic agents). The
+  core technique is **duplicate dealing** (`run_pair`): each deck is played twice
+  with the sides swapped so deal luck cancels. The deck seed (fixed across the
+  mirror) and the agent-randomness seed (independent per game) are decoupled, so
+  two identically-seeded stochastic agents don't play in lockstep.
+- **`stats.rs`** — `wilson_interval` (CI on a win rate), `mcnemar` (the paired
+  test for the duplicate design), and `Sprt` (sequential test for early stopping,
+  specified in Elo). No external stats dependency; keep formulas verifiable.
+- **`lib.rs`** — `builtin(name)` registry mapping agent names to factories; add
+  new agents here so the CLI can name them.
+- **`main.rs`** — the `euchre-eval` binary (clap), with fixed-games and `--sprt`
+  modes.
+
+Not yet built: round-robin + Elo/TrueSkill leaderboard, and rayon parallelism
+(matches are independent — add it once search-based agents make each one slow).
 
 ## Conventions
 
