@@ -97,6 +97,39 @@ impl DdState {
         }
     }
 
+    /// Builds the starting state for a freshly dealt hand about to be played out:
+    /// every seat's five cards, an empty trick, and `leader` on turn. Used to
+    /// evaluate a candidate contract during bidding, where there is no partial
+    /// trick or history to seed.
+    pub(crate) fn new_play(
+        hands: &[Vec<Card>; 4],
+        trump: Suit,
+        sitting_out: Option<Seat>,
+        maker_team: Team,
+        leader: Seat,
+    ) -> DdState {
+        let mut masks = [0u32; 4];
+        let mut cards_left = 0u8;
+        for s in Seat::ALL {
+            let si = seat_index(s);
+            for &c in &hands[si] {
+                masks[si] |= 1u32 << card_index(c);
+                cards_left += 1;
+            }
+        }
+        DdState {
+            hands: masks,
+            trump,
+            sitting_out,
+            turn: leader,
+            trick: [(Seat::North, FILLER); 4],
+            trick_len: 0,
+            maker_team,
+            maker_tricks: 0,
+            cards_left,
+        }
+    }
+
     /// The number of seats actually playing (three under a loner, else four).
     fn active_count(&self) -> usize {
         if self.sitting_out.is_some() { 3 } else { 4 }
@@ -269,7 +302,8 @@ mod tests {
         Card::new(rank, suit)
     }
 
-    /// Builds a fresh-trick state from explicit per-seat hands.
+    /// Builds a fresh-trick state from explicit per-seat hands, with `turn`
+    /// leading. A thin wrapper over the production [`DdState::new_play`].
     fn state(
         hands: [Vec<Card>; 4],
         trump: Suit,
@@ -277,25 +311,7 @@ mod tests {
         turn: Seat,
         maker_team: Team,
     ) -> DdState {
-        let mut masks = [0u32; 4];
-        let mut cards_left = 0u8;
-        for (i, h) in hands.iter().enumerate() {
-            for &c in h {
-                masks[i] |= 1u32 << card_index(c);
-                cards_left += 1;
-            }
-        }
-        DdState {
-            hands: masks,
-            trump,
-            sitting_out,
-            turn,
-            trick: [(Seat::North, FILLER); 4],
-            trick_len: 0,
-            maker_team,
-            maker_tricks: 0,
-            cards_left,
-        }
+        DdState::new_play(&hands, trump, sitting_out, maker_team, turn)
     }
 
     #[test]
@@ -460,5 +476,25 @@ mod tests {
         ];
         let st = state(hands, Suit::Spades, None, Seat::North, Team::NorthSouth);
         assert_eq!(solve(&st), solve(&st));
+    }
+
+    #[test]
+    fn new_play_leader_decides_an_off_suit_trick() {
+        // One card each, no trump in play: the led suit decides which ace wins, so
+        // the leader determines the outcome. This pins down `new_play`'s `leader`.
+        let hands = [
+            vec![card(Rank::Ace, Suit::Hearts)],    // North
+            vec![card(Rank::Ace, Suit::Diamonds)],  // East
+            vec![card(Rank::Nine, Suit::Hearts)],   // South
+            vec![card(Rank::Nine, Suit::Diamonds)], // West
+        ];
+        // North leads hearts → the heart ace wins for the makers.
+        let north_leads =
+            DdState::new_play(&hands, Suit::Spades, None, Team::NorthSouth, Seat::North);
+        assert_eq!(solve(&north_leads), 1);
+        // East leads diamonds → the diamond ace wins for the defenders.
+        let east_leads =
+            DdState::new_play(&hands, Suit::Spades, None, Team::NorthSouth, Seat::East);
+        assert_eq!(solve(&east_leads), 0);
     }
 }

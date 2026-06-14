@@ -22,12 +22,15 @@
 //! hiding or value deception — but for out-playing the heuristic agents it is a
 //! clear step up.
 //!
-//! **Bidding and discarding are delegated** to an embedded [`AdvancedAgent`]: its
-//! position- and score-aware auction is already strong, so the improvement here
-//! is deliberately confined to the play. Folding the search into bidding is a
-//! natural future extension.
+//! **Bidding is anchored PIMC.** The embedded [`AdvancedAgent`] picks the suit and
+//! the default bid (preserving conventions the double-dummy search cannot see),
+//! and the search only adjusts it when confident: it tunes alone-versus-partner
+//! (a loner has no partner to mis-model, so its value is trustworthy), vetoes a
+//! make whose simulated value is clearly losing, and orders up a hand the
+//! heuristic passed when the search is sure it profits. **Discarding stays
+//! delegated.** The search can be turned off with [`MonteCarloAgent::play_only`].
 
-use euchre_interface::{Agent, CallBid, Card, GameView, Seat, Suit, Team, UpcardBid};
+use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Rank, Seat, Suit, Team, UpcardBid};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::{IndexedRandom, SliceRandom};
@@ -57,6 +60,30 @@ const MAX_DEAL_RETRIES: usize = 32;
 /// real edge.
 const OVERRIDE_MARGIN_COEFF: f64 = 0.7;
 
+/// Worlds sampled per *bidding* decision. A make integrates the whole five-trick
+/// play, so the per-world score is noisier than a single card's; a few more
+/// samples tighten the mean enough for the margins below to read real signal.
+const DEFAULT_BID_DETERMINIZATIONS: usize = 48;
+
+/// Mean-match-point edge (over the sampled worlds) required to switch a make
+/// between alone and with-partner. Small, because both options are makes.
+const LONER_MARGIN: f64 = 0.30;
+
+/// Mean-match-point loss below which a make the advanced agent wanted is vetoed
+/// down to a pass. Larger than `LONER_MARGIN`: overriding a call is higher-stakes.
+const VETO_MARGIN: f64 = 0.50;
+
+/// Mean-match-point gain above which a pass the advanced agent chose is upgraded
+/// to a make. The largest margin: inventing a make the heuristic declined is the
+/// riskiest deviation, so the search must be clearly confident.
+const UPGRADE_MARGIN: f64 = 0.50;
+
+/// Optimism correction subtracted from the *with-partner* contract value before
+/// any comparison. The double-dummy solver assumes the partner plays perfectly
+/// with full knowledge, so it overvalues makes that need partner help; the alone
+/// value is immune (the partner sits out) and takes no haircut.
+const HAIRCUT: f64 = 0.40;
+
 /// A Perfect-Information Monte Carlo (PIMC) agent.
 ///
 /// It samples [`determinizations`](Self::with_determinizations) full deals at each
@@ -66,12 +93,16 @@ const OVERRIDE_MARGIN_COEFF: f64 = 0.7;
 /// [`MonteCarloAgent::with_determinizations`].
 #[derive(Debug)]
 pub struct MonteCarloAgent {
-    /// Delegate for bidding and discarding.
+    /// Delegate for the default bid and for discarding.
     advanced: AdvancedAgent,
     /// Source of randomness for determinization sampling.
     rng: SmallRng,
     /// Worlds sampled per play decision.
     determinizations: usize,
+    /// Worlds sampled per bidding decision.
+    bid_determinizations: usize,
+    /// Whether to search the bidding; when false, bidding is delegated wholesale.
+    bid_search: bool,
 }
 
 impl MonteCarloAgent {
@@ -81,6 +112,8 @@ impl MonteCarloAgent {
             advanced: AdvancedAgent::new(),
             rng: SmallRng::from_rng(&mut rand::rng()),
             determinizations: DEFAULT_DETERMINIZATIONS,
+            bid_determinizations: DEFAULT_BID_DETERMINIZATIONS,
+            bid_search: true,
         }
     }
 
@@ -90,6 +123,8 @@ impl MonteCarloAgent {
             advanced: AdvancedAgent::new(),
             rng: SmallRng::seed_from_u64(seed),
             determinizations: DEFAULT_DETERMINIZATIONS,
+            bid_determinizations: DEFAULT_BID_DETERMINIZATIONS,
+            bid_search: true,
         }
     }
 
@@ -98,6 +133,20 @@ impl MonteCarloAgent {
     /// small value to keep the suite quick.
     pub fn with_determinizations(mut self, n: usize) -> Self {
         self.determinizations = n.max(1);
+        self
+    }
+
+    /// Sets the number of determinizations sampled per bidding decision (clamped
+    /// to at least one).
+    pub fn with_bid_determinizations(mut self, n: usize) -> Self {
+        self.bid_determinizations = n.max(1);
+        self
+    }
+
+    /// Disables the bidding search, delegating every bid to the advanced agent.
+    /// Useful for isolating the value of search in the play.
+    pub fn play_only(mut self) -> Self {
+        self.bid_search = false;
         self
     }
 
@@ -245,6 +294,105 @@ impl MonteCarloAgent {
         }
         hands
     }
+
+    /// Samples one full deal for evaluating a candidate contract during bidding:
+    /// my five cards stay fixed, the other playing seats get five each from the
+    /// unseen pool, and (in round one) the dealer takes the up-card and buries its
+    /// weakest. No trick has been played, so there are no voids to respect.
+    /// Returns the hands and the seat that leads the play.
+    fn determinize_bid(
+        &mut self,
+        view: &GameView<'_>,
+        trump: Suit,
+        alone: bool,
+        up_card: Option<Card>,
+    ) -> ([Vec<Card>; 4], Seat) {
+        let me = view.seat;
+        let dealer = view.dealer;
+        let sitting_out = alone.then(|| me.partner());
+
+        let mut pool: Vec<Card> = Card::deck()
+            .into_iter()
+            .filter(|c| !view.hand.contains(c) && Some(*c) != up_card)
+            .collect();
+        pool.shuffle(&mut self.rng);
+
+        let mut hands: [Vec<Card>; 4] = std::array::from_fn(|_| Vec::new());
+        hands[seat_index(me)] = view.hand.to_vec();
+        let mut cards = pool.into_iter();
+        for s in Seat::ALL {
+            if s == me || Some(s) == sitting_out {
+                continue;
+            }
+            for _ in 0..5 {
+                hands[seat_index(s)].push(cards.next().expect("the pool covers the deal"));
+            }
+        }
+
+        // Round one: the dealer picks up the up-card and discards, unless the
+        // dealer is the seat sitting out a loner (then there is no pickup).
+        if let Some(up) = up_card
+            && Some(dealer) != sitting_out
+        {
+            let d = seat_index(dealer);
+            hands[d].push(up);
+            let buried = modeled_discard(&hands[d], trump);
+            hands[d].retain(|&c| c != buried);
+        }
+
+        (hands, first_leader(dealer, sitting_out))
+    }
+
+    /// The mean signed match points my team scores by making `trump` (alone or
+    /// with a partner), estimated by determinized double-dummy sampling.
+    fn contract_ev(
+        &mut self,
+        view: &GameView<'_>,
+        trump: Suit,
+        alone: bool,
+        up_card: Option<Card>,
+    ) -> f64 {
+        let me = view.seat;
+        let maker_team = me.team();
+        let sitting_out = alone.then(|| me.partner());
+        let mut total = 0i32;
+        for _ in 0..self.bid_determinizations {
+            let (hands, leader) = self.determinize_bid(view, trump, alone, up_card);
+            let st = DdState::new_play(&hands, trump, sitting_out, maker_team, leader);
+            total += my_team_score(solver::solve(&st), maker_team, alone, me);
+        }
+        total as f64 / self.bid_determinizations as f64
+    }
+
+    /// Refines a make the advanced agent wants (in `trump`, defaulting to
+    /// `default_bid`) using search: veto it down to a pass when its value is
+    /// clearly losing (only if `can_pass`), otherwise pick alone versus partner by
+    /// estimated value. Returns `None` to pass, `Some(bid)` to make.
+    fn refine_make(
+        &mut self,
+        view: &GameView<'_>,
+        trump: Suit,
+        default_bid: Bid,
+        up_card: Option<Card>,
+        can_pass: bool,
+    ) -> Option<Bid> {
+        // The with-partner value is optimistic (double-dummy trusts the partner);
+        // the alone value is not, so only the former takes the haircut.
+        let ev_partner = self.contract_ev(view, trump, false, up_card) - HAIRCUT;
+        let ev_alone = self.contract_ev(view, trump, true, up_card);
+
+        if can_pass && ev_partner.max(ev_alone) < -VETO_MARGIN {
+            return None;
+        }
+        let bid = if ev_alone >= ev_partner + LONER_MARGIN {
+            Bid::Alone
+        } else if ev_partner >= ev_alone + LONER_MARGIN {
+            Bid::WithPartner
+        } else {
+            default_bid
+        };
+        Some(bid)
+    }
 }
 
 impl Default for MonteCarloAgent {
@@ -255,11 +403,54 @@ impl Default for MonteCarloAgent {
 
 impl Agent for MonteCarloAgent {
     fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid {
-        self.advanced.bid_upcard(view, up_card)
+        let base = self.advanced.bid_upcard(view, up_card);
+        if !self.bid_search {
+            return base;
+        }
+        let trump = up_card.suit;
+        match base {
+            // Refine a make: veto a clear loser (round-one passing is always safe)
+            // or retune alone-vs-partner.
+            UpcardBid::OrderUp(bid) => {
+                match self.refine_make(view, trump, bid, Some(up_card), true) {
+                    Some(b) => UpcardBid::OrderUp(b),
+                    None => UpcardBid::Pass,
+                }
+            }
+            // Upgrade a pass to a make when the hand has enough trump to plausibly
+            // profit (a cheap filter that avoids searching hopeless passes) and the
+            // search is clearly confident.
+            UpcardBid::Pass => {
+                let mine = trump_count(view.hand, trump) + usize::from(view.seat == view.dealer); // I would take the up-card
+                if mine < 2 {
+                    return UpcardBid::Pass;
+                }
+                let ev_partner = self.contract_ev(view, trump, false, Some(up_card)) - HAIRCUT;
+                let ev_alone = self.contract_ev(view, trump, true, Some(up_card));
+                if ev_partner.max(ev_alone) < UPGRADE_MARGIN {
+                    UpcardBid::Pass
+                } else if ev_alone >= ev_partner + LONER_MARGIN {
+                    UpcardBid::OrderUp(Bid::Alone)
+                } else {
+                    UpcardBid::OrderUp(Bid::WithPartner)
+                }
+            }
+        }
     }
 
     fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
-        self.advanced.bid_call(view, turned_down)
+        let base = self.advanced.bid_call(view, turned_down);
+        match base {
+            CallBid::Call { suit, bid } if self.bid_search => {
+                // "Stick the dealer" forbids a forced dealer from passing.
+                let can_pass = !(view.rules.stick_the_dealer && view.seat == view.dealer);
+                match self.refine_make(view, suit, bid, None, can_pass) {
+                    Some(b) => CallBid::Call { suit, bid: b },
+                    None => CallBid::Pass,
+                }
+            }
+            other => other,
+        }
     }
 
     fn discard(&mut self, view: &GameView<'_>) -> Card {
@@ -331,6 +522,55 @@ fn my_team_score(maker_tricks: u8, maker_team: Team, alone: bool, me: Seat) -> i
     } else {
         -points
     }
+}
+
+/// How many of `hand`'s cards are trump (including the left bower).
+fn trump_count(hand: &[Card], trump: Suit) -> usize {
+    hand.iter().filter(|c| c.is_trump(trump)).count()
+}
+
+/// The seat that leads the first trick: the dealer's left, skipping a seat
+/// sitting out a loner. Mirrors the engine's leader rule.
+fn first_leader(dealer: Seat, sitting_out: Option<Seat>) -> Seat {
+    let candidate = dealer.next();
+    if Some(candidate) == sitting_out {
+        candidate.next()
+    } else {
+        candidate
+    }
+}
+
+/// Picks which card a dealer buries after taking the up-card into a six-card hand:
+/// shed the weakest off-trump card, sparing aces and leaning toward voiding a
+/// short side suit; if the hand is all trump, drop the lowest trump. A coarse
+/// model of [`AdvancedAgent::discard`], good enough for bid-time sampling.
+fn modeled_discard(hand: &[Card], trump: Suit) -> Card {
+    let non_trump: Vec<Card> = hand
+        .iter()
+        .copied()
+        .filter(|c| !c.is_trump(trump))
+        .collect();
+    if non_trump.is_empty() {
+        return *hand
+            .iter()
+            .min_by_key(|c| c.trump_strength(trump, trump))
+            .expect("hand is non-empty");
+    }
+    let count_in = |suit: Suit| {
+        non_trump
+            .iter()
+            .filter(|c| c.effective_suit(trump) == suit)
+            .count()
+    };
+    let keep_ace = non_trump.iter().any(|c| c.rank != Rank::Ace);
+    *non_trump
+        .iter()
+        .filter(|c| !keep_ace || c.rank != Rank::Ace)
+        .min_by_key(|c| {
+            let suit = c.effective_suit(trump);
+            (count_in(suit), c.trump_strength(trump, suit))
+        })
+        .expect("non_trump is non-empty")
 }
 
 #[cfg(test)]
@@ -536,5 +776,136 @@ mod tests {
         assert_eq!(my_team_score(3, Team::NorthSouth, false, Seat::North), 1); // bare make
         assert_eq!(my_team_score(2, Team::NorthSouth, false, Seat::North), -2); // euchred
         assert_eq!(my_team_score(2, Team::NorthSouth, false, Seat::East), 2); // euchred, defender
+    }
+
+    // --- Bidding -------------------------------------------------------------
+
+    fn five() -> [Card; 5] {
+        [
+            card(Rank::Jack, Suit::Spades),
+            card(Rank::Ace, Suit::Spades),
+            card(Rank::King, Suit::Hearts),
+            card(Rank::Nine, Suit::Diamonds),
+            card(Rank::Ten, Suit::Clubs),
+        ]
+    }
+
+    #[test]
+    fn determinize_bid_round1_deals_a_full_table() {
+        let hand = five();
+        let empty = Trick::new();
+        let view = make_view(Seat::North, Seat::West, &hand, None, &empty, &[]);
+        let up = card(Rank::Queen, Suit::Spades); // not in hand
+        let mut agent = MonteCarloAgent::with_seed(5);
+        for _ in 0..50 {
+            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, false, Some(up));
+            for s in [Seat::East, Seat::South, Seat::West] {
+                assert_eq!(world[seat_index(s)].len(), 5);
+            }
+            assert_world_consistent(&world, &view);
+            assert_eq!(leader, Seat::North); // dealer West's left
+        }
+    }
+
+    #[test]
+    fn determinize_bid_alone_sits_the_partner_out() {
+        let hand = five();
+        let empty = Trick::new();
+        // East deals; North goes alone, so South (North's partner) sits out and the
+        // lead, normally South, skips to West.
+        let view = make_view(Seat::North, Seat::East, &hand, None, &empty, &[]);
+        let up = card(Rank::Queen, Suit::Spades);
+        let mut agent = MonteCarloAgent::with_seed(6);
+        for _ in 0..50 {
+            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, true, Some(up));
+            assert!(world[seat_index(Seat::South)].is_empty());
+            assert_eq!(world[seat_index(Seat::East)].len(), 5);
+            assert_eq!(world[seat_index(Seat::West)].len(), 5);
+            assert_world_consistent(&world, &view);
+            assert_eq!(leader, Seat::West);
+        }
+    }
+
+    #[test]
+    fn determinize_bid_round2_has_no_pickup() {
+        let hand = five();
+        let empty = Trick::new();
+        let view = make_view(Seat::North, Seat::West, &hand, None, &empty, &[]);
+        let mut agent = MonteCarloAgent::with_seed(7);
+        let (world, leader) = agent.determinize_bid(&view, Suit::Hearts, false, None);
+        for s in [Seat::East, Seat::South, Seat::West] {
+            assert_eq!(world[seat_index(s)].len(), 5);
+        }
+        assert_world_consistent(&world, &view);
+        assert_eq!(leader, Seat::North);
+    }
+
+    #[test]
+    fn passes_a_hopeless_upcard() {
+        // No trump and nothing of value: below the pre-filter, so it never even
+        // searches — and certainly does not order up.
+        let junk = [
+            card(Rank::Nine, Suit::Hearts),
+            card(Rank::Ten, Suit::Hearts),
+            card(Rank::Nine, Suit::Diamonds),
+            card(Rank::Queen, Suit::Diamonds),
+            card(Rank::Nine, Suit::Clubs),
+        ];
+        let empty = Trick::new();
+        let view = make_view(Seat::North, Seat::West, &junk, None, &empty, &[]);
+        let mut agent = MonteCarloAgent::with_seed(1).with_bid_determinizations(8);
+        assert_eq!(
+            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
+            UpcardBid::Pass
+        );
+    }
+
+    #[test]
+    fn orders_up_a_monster() {
+        let monster = [
+            card(Rank::Jack, Suit::Spades), // right bower
+            card(Rank::Jack, Suit::Clubs),  // left bower
+            card(Rank::Ace, Suit::Spades),
+            card(Rank::King, Suit::Spades),
+            card(Rank::Ace, Suit::Hearts),
+        ];
+        let empty = Trick::new();
+        let view = make_view(Seat::North, Seat::West, &monster, None, &empty, &[]);
+        let mut agent = MonteCarloAgent::with_seed(2).with_bid_determinizations(8);
+        assert!(matches!(
+            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
+            UpcardBid::OrderUp(_)
+        ));
+    }
+
+    #[test]
+    fn bid_call_never_passes_a_stuck_dealer() {
+        // Junk hand, but the dealer is stuck: the veto must not fire (the engine
+        // forbids a pass), so a suit is always named.
+        let junk = [
+            card(Rank::Nine, Suit::Hearts),
+            card(Rank::Ten, Suit::Hearts),
+            card(Rank::Nine, Suit::Diamonds),
+            card(Rank::Queen, Suit::Diamonds),
+            card(Rank::Nine, Suit::Clubs),
+        ];
+        let empty = Trick::new();
+        let view = GameView {
+            seat: Seat::North,
+            dealer: Seat::North,
+            hand: &junk,
+            contract: None,
+            current_trick: &empty,
+            completed_tricks: &[],
+            scores: Scores::default(),
+            rules: GameRules {
+                stick_the_dealer: true,
+            },
+        };
+        let mut agent = MonteCarloAgent::with_seed(3).with_bid_determinizations(8);
+        assert!(matches!(
+            agent.bid_call(&view, Suit::Spades),
+            CallBid::Call { .. }
+        ));
     }
 }

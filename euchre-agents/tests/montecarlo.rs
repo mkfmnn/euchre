@@ -57,9 +57,13 @@ fn play_match(
 }
 
 /// Builds a Monte-Carlo agent seeded distinctly per construction, at the test
-/// search width.
+/// search width for both play and bidding (the default bid width is far larger).
 fn montecarlo(tag: u64) -> Box<dyn Agent> {
-    Box::new(MonteCarloAgent::with_seed(tag).with_determinizations(TEST_N))
+    Box::new(
+        MonteCarloAgent::with_seed(tag)
+            .with_determinizations(TEST_N)
+            .with_bid_determinizations(TEST_N),
+    )
 }
 
 /// A fresh-seeded factory closure for the Monte-Carlo agent, giving each of the
@@ -135,10 +139,18 @@ fn a_full_montecarlo_table_completes() {
     // Four searching agents must always make legal moves and finish a match
     // without tripping any of the engine's legality assertions.
     let mut bots = [
-        MonteCarloAgent::with_seed(1).with_determinizations(6),
-        MonteCarloAgent::with_seed(2).with_determinizations(6),
-        MonteCarloAgent::with_seed(3).with_determinizations(6),
-        MonteCarloAgent::with_seed(4).with_determinizations(6),
+        MonteCarloAgent::with_seed(1)
+            .with_determinizations(6)
+            .with_bid_determinizations(6),
+        MonteCarloAgent::with_seed(2)
+            .with_determinizations(6)
+            .with_bid_determinizations(6),
+        MonteCarloAgent::with_seed(3)
+            .with_determinizations(6)
+            .with_bid_determinizations(6),
+        MonteCarloAgent::with_seed(4)
+            .with_determinizations(6)
+            .with_bid_determinizations(6),
     ];
     let [a, b, c, d] = &mut bots;
     let players = [

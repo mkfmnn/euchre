@@ -51,9 +51,10 @@ use runner::{AgentFactory, Contestant};
 
 /// Builds a contestant for a built-in agent by name, or `None` if unknown.
 ///
-/// Recognised names are `"random"`, `"heuristic"`, `"advanced"`, and
-/// `"montecarlo"`. New agents should be added here so the CLI and any tooling can
-/// name them.
+/// Recognised names are `"random"`, `"heuristic"`, `"advanced"`, `"montecarlo"`,
+/// and `"montecarlo-play"` (the Monte-Carlo agent with bidding search disabled, so
+/// it delegates bidding to the advanced agent). New agents should be added here so
+/// the CLI and any tooling can name them.
 pub fn builtin(name: &str) -> Option<Contestant> {
     let factory: AgentFactory = match name {
         "random" => Box::new(|seed| Box::new(RandomAgent::with_seed(seed)) as Box<dyn Agent>),
@@ -62,10 +63,19 @@ pub fn builtin(name: &str) -> Option<Contestant> {
         "montecarlo" => {
             Box::new(|seed| Box::new(MonteCarloAgent::with_seed(seed)) as Box<dyn Agent>)
         }
+        "montecarlo-play" => Box::new(|seed| {
+            Box::new(MonteCarloAgent::with_seed(seed).play_only()) as Box<dyn Agent>
+        }),
         _ => return None,
     };
     Some(Contestant::new(name, factory))
 }
 
 /// The names of every built-in agent, for help text and listings.
-pub const BUILTIN_AGENTS: &[&str] = &["random", "heuristic", "advanced", "montecarlo"];
+pub const BUILTIN_AGENTS: &[&str] = &[
+    "random",
+    "heuristic",
+    "advanced",
+    "montecarlo",
+    "montecarlo-play",
+];
