@@ -1,0 +1,13 @@
+[package]
+name = "euchre-eval"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+euchre-interface = { path = "../euchre-interface" }
+euchre-engine = { path = "../euchre-engine" }
+euchre-agents = { path = "../euchre-agents" }
+
+[[bin]]
+name = "euchre-eval"
+path = "src/main.rs"

@@ -207,6 +207,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "euchre-eval"
+version = "0.1.0"
+dependencies = [
+ "euchre-agents",
+ "euchre-engine",
+ "euchre-interface",
+]
+
+[[package]]
 name = "euchre-interface"
 version = "0.1.0"
 dependencies = [

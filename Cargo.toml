@@ -4,5 +4,6 @@ members = [
     "euchre-engine",
     "euchre-agents",
     "euchre-server",
+    "euchre-eval",
 ]
 resolver = "2"
