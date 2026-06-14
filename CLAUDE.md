@@ -77,6 +77,12 @@ Two layers:
 - `RandomAgent` — uniform legal choice; baseline opponent and fuzz source.
 - `HeuristicAgent` — rule-of-thumb bidding/play, no search; reliably beats
   random. The `tests/vs_random.rs` integration test asserts this.
+- `AdvancedAgent` — a stronger heuristic player (still no search or learning):
+  trick-counting hand evaluation, position-aware bidding with the "next"/"green"
+  calling conventions, score-aware aggression, and card counting in the play
+  (tracking played cards and revealed voids to spot masters, draw trump, and
+  slough dead cards). The `tests/advanced.rs` integration test asserts it beats
+  both random and the plain heuristic.
 
 ### `euchre-server` — websocket multiplayer (walking skeleton)
 

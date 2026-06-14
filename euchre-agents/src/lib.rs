@@ -4,15 +4,19 @@
 //! [`Player::Bot`] slot. The engine and interface ship no strategies of their
 //! own; this crate supplies them.
 //!
-//! Two agents are provided, from simplest to least simple:
+//! Three agents are provided, from simplest to strongest:
 //!
 //! * [`RandomAgent`] — picks uniformly at random among the legal options at
 //!   every decision. A baseline opponent and a fuzz source.
 //! * [`HeuristicAgent`] — plays a handful of common-sense rules of thumb for
 //!   bidding, discarding, leading, and following. No search, but a recognizably
 //!   sensible game that reliably beats the random agent.
+//! * [`AdvancedAgent`] — a stronger heuristic player that counts cards, bids by
+//!   position with the "next"/"green" calling conventions, evaluates hands in
+//!   estimated tricks, and plays score-aware. Still no search or learning, but it
+//!   beats the plain heuristic.
 //!
-//! Both implement the [`Agent`] trait, so either drops into a driver:
+//! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
 //! ```no_run
 //! use euchre_agents::{HeuristicAgent, RandomAgent};
@@ -43,8 +47,10 @@
 //! [`Agent`]: euchre_interface::Agent
 //! [`Player::Bot`]: ../euchre_engine/enum.Player.html
 
+pub mod advanced;
 pub mod heuristic;
 pub mod random;
 
+pub use advanced::AdvancedAgent;
 pub use heuristic::HeuristicAgent;
 pub use random::RandomAgent;
