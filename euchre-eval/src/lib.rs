@@ -41,9 +41,19 @@
 //! println!("{} win rate {:.1}% ({:.1}–{:.1}%), McNemar p = {:.4}",
 //!     a.name, 100.0 * h2h.a_win_rate(), 100.0 * lo, 100.0 * hi, test.p_value);
 //! ```
+//!
+//! ## Ranking a whole pool
+//!
+//! To compare more than two agents at once, [`tournament`] runs a round-robin —
+//! every agent against every other, reusing the same duplicate-dealing pairs —
+//! and [`elo`] fits BayesElo-style Bradley-Terry ratings (with uncertainties) to
+//! the aggregate, producing a leaderboard. The `euchre-tournament` binary wraps
+//! both into a CLI with table, CSV, and JSON output.
 
+pub mod elo;
 pub mod runner;
 pub mod stats;
+pub mod tournament;
 
 use euchre_agents::{AdvancedAgent, HeuristicAgent, MonteCarloAgent, RandomAgent};
 use euchre_interface::Agent;
