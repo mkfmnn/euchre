@@ -130,35 +130,49 @@ pub fn run_pair(config: GameConfig, seed: u64, a: &AgentFactory, b: &AgentFactor
 pub struct HeadToHead {
     /// Duplicate-dealing pairs played.
     pub pairs: u64,
-    /// Total games played (`2 * pairs`).
-    pub games: u64,
-    /// Match wins for the first agent.
-    pub a_wins: u64,
-    /// Match wins for the second agent.
-    pub b_wins: u64,
-    /// Discordant pairs decided in the first agent's favour (for McNemar).
+    /// Discordant pairs decided in the first agent's favour (for McNemar): the
+    /// same deck swept 2–0 by the first agent.
     pub a_better: u64,
     /// Discordant pairs decided in the second agent's favour (for McNemar).
     pub b_better: u64,
 }
 
 impl HeadToHead {
-    /// Folds one pair's result into the totals.
+    /// Folds one pair's result into the totals. Every pair is either a sweep for
+    /// one side (a discordant pair) or a 1–1 split (a tie), so these three counts
+    /// determine every other tally.
     pub fn record(&mut self, pair: PairResult) {
         self.pairs += 1;
-        self.games += 2;
-        self.a_wins += pair.a_wins();
-        self.b_wins += 2 - pair.a_wins();
         self.a_better += u64::from(pair.a_better());
         self.b_better += u64::from(pair.b_better());
     }
 
+    /// Total games played (`2 * pairs`).
+    pub fn games(&self) -> u64 {
+        2 * self.pairs
+    }
+
+    /// Pairs split 1–1, where each agent won once on the same deck.
+    pub fn ties(&self) -> u64 {
+        self.pairs - self.a_better - self.b_better
+    }
+
+    /// Match wins for the first agent. A swept pair is worth two; a tie, one.
+    pub fn a_wins(&self) -> u64 {
+        2 * self.a_better + self.ties()
+    }
+
+    /// Match wins for the second agent.
+    pub fn b_wins(&self) -> u64 {
+        2 * self.b_better + self.ties()
+    }
+
     /// The first agent's overall match-win rate.
     pub fn a_win_rate(&self) -> f64 {
-        if self.games == 0 {
+        if self.pairs == 0 {
             0.0
         } else {
-            self.a_wins as f64 / self.games as f64
+            self.a_wins() as f64 / self.games() as f64
         }
     }
 }

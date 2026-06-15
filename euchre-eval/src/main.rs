@@ -123,7 +123,7 @@ fn run_sprt_mode(cli: &Cli, config: GameConfig, a: &Contestant, b: &Contestant) 
             &a.factory,
             &b.factory,
         ));
-        verdict = sprt.verdict(h2h.a_wins, h2h.b_wins);
+        verdict = sprt.verdict(h2h.a_wins(), h2h.b_wins());
         if verdict != SprtVerdict::Continue {
             break;
         }
@@ -133,19 +133,19 @@ fn run_sprt_mode(cli: &Cli, config: GameConfig, a: &Contestant, b: &Contestant) 
         SprtVerdict::AcceptH1 => println!(
             "Result: H1 accepted — {} is stronger (LLR {:.3} >= {:.3}).",
             a.name,
-            sprt.llr(h2h.a_wins, h2h.b_wins),
+            sprt.llr(h2h.a_wins(), h2h.b_wins()),
             upper
         ),
         SprtVerdict::AcceptH0 => println!(
             "Result: H0 accepted — {} is not meaningfully stronger (LLR {:.3} <= {:.3}).",
             a.name,
-            sprt.llr(h2h.a_wins, h2h.b_wins),
+            sprt.llr(h2h.a_wins(), h2h.b_wins()),
             lower
         ),
         SprtVerdict::Continue => println!(
             "Result: undecided after {} games (LLR {:.3} within bounds); raise --games.",
-            h2h.games,
-            sprt.llr(h2h.a_wins, h2h.b_wins)
+            h2h.games(),
+            sprt.llr(h2h.a_wins(), h2h.b_wins())
         ),
     }
     println!();
@@ -154,22 +154,49 @@ fn run_sprt_mode(cli: &Cli, config: GameConfig, a: &Contestant, b: &Contestant) 
 
 /// Prints the shared summary block for a completed head-to-head.
 fn report(a: &Contestant, b: &Contestant, h2h: &HeadToHead) {
-    let (lo, hi) = wilson_interval(h2h.a_wins, h2h.games, Z_95);
+    let (lo, hi) = wilson_interval(h2h.a_wins(), h2h.games(), Z_95);
     let test = mcnemar(h2h.a_better, h2h.b_better);
-    println!("games:     {} ({} duplicate pairs)", h2h.games, h2h.pairs);
+
+    let decisive = h2h.a_better + h2h.b_better;
+    let ignoring_ties = if decisive == 0 {
+        0.0
+    } else {
+        100.0 * h2h.a_better as f64 / decisive as f64
+    };
+    let tie_pct = if h2h.pairs == 0 {
+        0.0
+    } else {
+        100.0 * h2h.ties() as f64 / h2h.pairs as f64
+    };
+
     println!(
-        "record:    {} {}-{} {}",
-        a.name, h2h.a_wins, h2h.b_wins, b.name
+        "{:<14}{} ({} duplicate pairs)",
+        "games:",
+        h2h.games(),
+        h2h.pairs
     );
     println!(
-        "{} win rate: {:.1}%  (95% CI {:.1}–{:.1}%)",
+        "{:<14}{} wins {}, {} wins {}; {} win rate: {:.1}% (95% CI {:.1}–{:.1}%)",
+        "games record:",
+        a.name,
+        h2h.a_wins(),
+        b.name,
+        h2h.b_wins(),
         a.name,
         100.0 * h2h.a_win_rate(),
         100.0 * lo,
         100.0 * hi
     );
     println!(
-        "McNemar:   {} better on {} deals, {} on {}; p = {:.4}",
-        a.name, test.a_better, b.name, test.b_better, test.p_value
+        "{:<14}{} wins {} ({:.1}% ignoring ties), {} wins {}; {} ties ({:.1}% of pairs)",
+        "pairs record:",
+        a.name,
+        h2h.a_better,
+        ignoring_ties,
+        b.name,
+        h2h.b_better,
+        h2h.ties(),
+        tie_pct
     );
+    println!("{:<14}p = {:.4}", "McNemar:", test.p_value);
 }
