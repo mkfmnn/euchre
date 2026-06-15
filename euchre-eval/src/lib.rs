@@ -36,7 +36,7 @@
 //! for seed in 0..500 {
 //!     h2h.record(run_pair(GameConfig::default(), seed, &a.factory, &b.factory));
 //! }
-//! let (lo, hi) = wilson_interval(h2h.a_wins, h2h.games, Z_95);
+//! let (lo, hi) = wilson_interval(h2h.a_wins(), h2h.games(), Z_95);
 //! let test = mcnemar(h2h.a_better, h2h.b_better);
 //! println!("{} win rate {:.1}% ({:.1}–{:.1}%), McNemar p = {:.4}",
 //!     a.name, 100.0 * h2h.a_win_rate(), 100.0 * lo, 100.0 * hi, test.p_value);
