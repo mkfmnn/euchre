@@ -4,7 +4,7 @@
 //! [`Player::Bot`] slot. The engine and interface ship no strategies of their
 //! own; this crate supplies them.
 //!
-//! Three agents are provided, from simplest to strongest:
+//! Four agents are provided, from simplest to strongest:
 //!
 //! * [`RandomAgent`] — picks uniformly at random among the legal options at
 //!   every decision. A baseline opponent and a fuzz source.
@@ -15,6 +15,11 @@
 //!   position with the "next"/"green" calling conventions, evaluates hands in
 //!   estimated tricks, and plays score-aware. Still no search or learning, but it
 //!   beats the plain heuristic.
+//! * [`MonteCarloAgent`] — the first *searching* agent. At each card it samples
+//!   full deals of the hidden cards consistent with what it has seen, solves each
+//!   to a double-dummy optimum, and plays the card that scores best on average
+//!   (Perfect-Information Monte Carlo). It reuses [`AdvancedAgent`] for bidding
+//!   and beats it in the play.
 //!
 //! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
@@ -49,8 +54,11 @@
 
 pub mod advanced;
 pub mod heuristic;
+pub mod montecarlo;
 pub mod random;
+mod solver;
 
 pub use advanced::AdvancedAgent;
 pub use heuristic::HeuristicAgent;
+pub use montecarlo::MonteCarloAgent;
 pub use random::RandomAgent;

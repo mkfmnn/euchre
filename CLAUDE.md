@@ -83,6 +83,18 @@ Two layers:
   (tracking played cards and revealed voids to spot masters, draw trump, and
   slough dead cards). The `tests/advanced.rs` integration test asserts it beats
   both random and the plain heuristic.
+- `MonteCarloAgent` — the first *searching* agent (Perfect-Information Monte
+  Carlo). For each play it samples full deals of the hidden cards consistent with
+  what it has seen (respecting revealed voids), solves each sampled world exactly
+  with a small double-dummy alpha-beta search (`solver.rs`), and plays the card
+  with the best average match-point outcome. It anchors to `AdvancedAgent`'s card,
+  overriding only when the search is confident, so it is robustly at least as
+  strong as the advanced agent at any search width. Its **bidding** is likewise
+  anchored PIMC — `AdvancedAgent` picks the suit and default bid, and the search
+  retunes alone/partner, vetoes losing makes, and orders up profitable passes
+  (`discard` stays delegated; `play_only()` disables the bidding search). Tunable
+  via `with_determinizations`; the `tests/montecarlo.rs` integration test asserts
+  it beats both random and the advanced agent.
 
 ### `euchre-server` — websocket multiplayer (walking skeleton)
 
