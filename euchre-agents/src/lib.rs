@@ -4,7 +4,7 @@
 //! [`Player::Bot`] slot. The engine and interface ship no strategies of their
 //! own; this crate supplies them.
 //!
-//! Four agents are provided, from simplest to strongest:
+//! Five agents are provided:
 //!
 //! * [`RandomAgent`] — picks uniformly at random among the legal options at
 //!   every decision. A baseline opponent and a fuzz source.
@@ -20,6 +20,10 @@
 //!   to a double-dummy optimum, and plays the card that scores best on average
 //!   (Perfect-Information Monte Carlo). It reuses [`AdvancedAgent`] for bidding
 //!   and beats it in the play.
+//! * [`NeuralAgent`] — a *learned*, search-free agent. Four small policy networks
+//!   (one per decision) are trained by behavioural cloning of a strong teacher, so
+//!   each move is a single forward pass. See the [`neural`] module for the model,
+//!   the training loop, and the design rationale.
 //!
 //! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
@@ -55,10 +59,12 @@
 pub mod advanced;
 pub mod heuristic;
 pub mod montecarlo;
+pub mod neural;
 pub mod random;
 mod solver;
 
 pub use advanced::AdvancedAgent;
 pub use heuristic::HeuristicAgent;
 pub use montecarlo::MonteCarloAgent;
+pub use neural::NeuralAgent;
 pub use random::RandomAgent;

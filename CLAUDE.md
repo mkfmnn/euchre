@@ -24,9 +24,13 @@ cargo run -p euchre-server --example cli_client  # connect a terminal client to 
 
 cargo run -p euchre-eval -- heuristic random              # score one agent against another
 cargo run -p euchre-eval -- heuristic random --sprt       # stop early once the result is decided
+cargo run -p euchre-eval -- neural advanced               # the learned agent vs the teacher it was cloned from
 
 cargo run -p euchre-eval --bin euchre-tournament -- --all          # round-robin every built-in agent, ranked by Elo
 cargo run -p euchre-eval --bin euchre-tournament -- random heuristic advanced --format csv  # named pool, CSV output
+
+# Retrain the neural agent's embedded weights (run in --release; the teacher is slow):
+cargo run --release -p euchre-agents --example train_neural -- --teacher advanced --eval
 ```
 
 There is no CI config; run `cargo test`, `cargo clippy`, and `cargo fmt`
@@ -98,6 +102,19 @@ Two layers:
   (`discard` stays delegated; `play_only()` disables the bidding search). Tunable
   via `with_determinizations`; the `tests/montecarlo.rs` integration test asserts
   it beats both random and the advanced agent.
+- `NeuralAgent` — a *learned*, search-free agent. Four small policy MLPs (one per
+  decision) are trained by **behavioural cloning** of a strong teacher, so every
+  move is a single forward pass — no search, by design. The `neural` module is
+  self-contained: `net.rs` is a hand-written, gradient-checked MLP + Adam (no ML
+  dependency, matching the project's verifiable-numerics bent); `features.rs`
+  encodes the `GameView` in a **trump-relative** frame (cards numbered by their
+  role relative to trump) so suit symmetry is learned once; `train.rs` is the
+  model bundle + supervised loop. The trained weights ship embedded
+  (`assets/euchre-net.bin`, distilled from `AdvancedAgent`); `examples/train_neural.rs`
+  regenerates them (it, not the library, depends on the engine to generate games),
+  and the `tests/neural.rs` integration test asserts the agent beats random and the
+  heuristic and stays competitive with its teacher. The module docs hold the
+  rationale (cloning over RL, hand-rolled MLP over a framework, the encoding).
 
 ### `euchre-server` — websocket multiplayer (walking skeleton)
 
