@@ -31,7 +31,7 @@ cargo run -p euchre-eval --bin euchre-tournament -- random heuristic advanced --
 
 # Retrain the neural agent's embedded weights (run in --release). Two stages:
 cargo run --release -p euchre-agents --example train_neural -- --teacher advanced --eval  # 1. behavioural-cloning warm start
-cargo run --release -p euchre-agents --example train_rl -- --iters 90 --games 256          # 2. self-play RL fine-tune (writes the same asset)
+cargo run --release -p euchre-agents --example train_rl                                    # 2. self-play RL fine-tune (defaults reproduce the shipped weights; writes the same asset)
 ```
 
 There is no CI config; run `cargo test`, `cargo clippy`, and `cargo fmt`

@@ -25,11 +25,12 @@
 //! checkpoint that ships is selected on the real objective: match wins against the
 //! advanced agent.
 //!
-//! Run it in release mode after the BC stage has produced the warm start:
+//! Run it in release mode after the BC stage has produced the warm start; the
+//! defaults below are the settings that trained the shipped weights, so the bare
+//! command reproduces the shipped agent:
 //!
 //! ```text
-//! cargo run --release -p euchre-agents --example train_rl -- \
-//!     --iters 80 --games 200 --eval-pairs 400
+//! cargo run --release -p euchre-agents --example train_rl
 //! ```
 //!
 //! Flags (all optional): `--warm-start PATH`, `--out PATH`, `--iters N`,
@@ -448,17 +449,19 @@ struct Options {
 impl Options {
     fn parse() -> Options {
         let args: Vec<String> = std::env::args().skip(1).collect();
+        // Defaults are the settings that trained the shipped weights, so a bare
+        // `cargo run` reproduces the shipped agent.
         let mut o = Options {
             warm_start: "euchre-agents/assets/euchre-net.bin".into(),
             out: "euchre-agents/assets/euchre-net.bin".into(),
-            iters: 80,
-            games: 200,
+            iters: 90,
+            games: 256,
             batch_size: 512,
-            lr: 5e-4,
-            entropy: 0.01,
-            temperature: 1.0,
+            lr: 7e-4,
+            entropy: 0.03,
+            temperature: 1.5,
             self_play_frac: 0.5,
-            eval_pairs: 400,
+            eval_pairs: 500,
             eval_every: 5,
             seed: 0,
         };
