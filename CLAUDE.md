@@ -29,8 +29,9 @@ cargo run -p euchre-eval -- neural advanced               # the learned agent vs
 cargo run -p euchre-eval --bin euchre-tournament -- --all          # round-robin every built-in agent, ranked by Elo
 cargo run -p euchre-eval --bin euchre-tournament -- random heuristic advanced --format csv  # named pool, CSV output
 
-# Retrain the neural agent's embedded weights (run in --release; the teacher is slow):
-cargo run --release -p euchre-agents --example train_neural -- --teacher advanced --eval
+# Retrain the neural agent's embedded weights (run in --release). Two stages:
+cargo run --release -p euchre-agents --example train_neural -- --teacher advanced --eval  # 1. behavioural-cloning warm start
+cargo run --release -p euchre-agents --example train_rl -- --iters 90 --games 256          # 2. self-play RL fine-tune (writes the same asset)
 ```
 
 There is no CI config; run `cargo test`, `cargo clippy`, and `cargo fmt`
@@ -103,18 +104,23 @@ Two layers:
   via `with_determinizations`; the `tests/montecarlo.rs` integration test asserts
   it beats both random and the advanced agent.
 - `NeuralAgent` — a *learned*, search-free agent. Four small policy MLPs (one per
-  decision) are trained by **behavioural cloning** of a strong teacher, so every
-  move is a single forward pass — no search, by design. The `neural` module is
-  self-contained: `net.rs` is a hand-written, gradient-checked MLP + Adam (no ML
-  dependency, matching the project's verifiable-numerics bent); `features.rs`
-  encodes the `GameView` in a **trump-relative** frame (cards numbered by their
-  role relative to trump) so suit symmetry is learned once; `train.rs` is the
-  model bundle + supervised loop. The trained weights ship embedded
-  (`assets/euchre-net.bin`, distilled from `AdvancedAgent`); `examples/train_neural.rs`
-  regenerates them (it, not the library, depends on the engine to generate games),
-  and the `tests/neural.rs` integration test asserts the agent beats random and the
-  heuristic and stays competitive with its teacher. The module docs hold the
-  rationale (cloning over RL, hand-rolled MLP over a framework, the encoding).
+  decision) are trained in two stages — **behavioural cloning** of a strong teacher
+  for a competent warm start, then **self-play reinforcement learning** (REINFORCE
+  with a whitened-return baseline and an entropy bonus) that pushes the policy
+  *past* its teacher — so every move is still a single forward pass with no search,
+  yet the agent now beats the `AdvancedAgent` it was cloned from. The `neural`
+  module is self-contained: `net.rs` is a hand-written, gradient-checked MLP + Adam
+  (the policy gradient reuses the same `softmax - onehot` gradient, so it inherits
+  that check; no ML dependency, matching the project's verifiable-numerics bent);
+  `features.rs` encodes the `GameView` in a **trump-relative** frame (cards numbered
+  by their role relative to trump) so suit symmetry is learned once; `train.rs` is
+  the model bundle, the supervised loop, and the `PolicyTrainer` used for RL. The
+  trained weights ship embedded (`assets/euchre-net.bin`); `examples/train_neural.rs`
+  produces the cloned warm start and `examples/train_rl.rs` fine-tunes it by
+  self-play (both depend on the engine to generate games; the library does not).
+  The `tests/neural.rs` integration test asserts the agent beats random, the
+  heuristic, and the advanced teacher. The module docs hold the rationale (clone
+  then reinforce, hand-rolled MLP over a framework, the encoding).
 
 ### `euchre-server` — websocket multiplayer (walking skeleton)
 
