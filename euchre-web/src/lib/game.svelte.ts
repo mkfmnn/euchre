@@ -10,7 +10,7 @@
 //! Because the server (and its bots) emit events far faster than a human can
 //! follow, messages are not applied as they arrive: they go through a small
 //! render queue that paces them out (see the pacing constants below), applying
-//! one at a time in order so cards appear with legible gaps.
+//! one at a time in order so each action appears with a legible gap.
 
 import type {
   ActionBubble,
@@ -36,14 +36,14 @@ import { SUIT_SYMBOL, parseCard, sortHand } from './cards';
 // The server fires events as fast as the bots decide, which is too quick to
 // follow, so the client paces them out. Incoming messages are queued and
 // rendered strictly in order, one at a time. The delays below are *minimums*:
-// time a message already spent in flight counts toward them, so a play that
+// time a message already spent in flight counts toward them, so an action that
 // takes 1.2s to arrive shows at once, while one that arrives in 0.2s waits out
-// the remaining 0.3s. Your own card is exempt — it renders the instant you play
-// it (you cannot act before your turn unlocks, which is itself gated behind the
-// previous card).
+// the remaining 0.3s. Your own actions are exempt — they render the instant you
+// make them (you cannot act before your turn unlocks, which is itself gated
+// behind the previous action).
 
-/** Minimum gap between two consecutive cards appearing on the table. */
-const PLAY_GAP_MS = 500;
+/** Minimum gap between two consecutive actions (bid, pass, discard, play). */
+const ACTION_GAP_MS = 500;
 /** How long a completed trick rests on the table before being swept up. */
 const TRICK_LINGER_MS = 1000;
 /** How long a hand's result lingers before the next hand is dealt. */
@@ -82,8 +82,15 @@ function describeHand(score: HandScore): string {
 
 /** Whether rendering this message advances the pacing clock (a visible beat). */
 function paceSetting(msg: ServerMsg): boolean {
-  if (msg.type === 'UPDATE') return msg.action.type === 'PLAY';
-  return msg.type === 'TRICK_WON' || msg.type === 'HAND_COMPLETE';
+  switch (msg.type) {
+    case 'UPDATE': // any action: bid, pass, discard, or play
+    case 'TRICK_WON':
+    case 'HAND_COMPLETE':
+    case 'DEAL': // so the first bid sits a beat after the hand is dealt
+      return true;
+    default:
+      return false;
+  }
 }
 
 export class GameStore {
@@ -269,8 +276,8 @@ export class GameStore {
   private delayBefore(msg: ServerMsg): number {
     switch (msg.type) {
       case 'UPDATE':
-        // Opponents' cards are paced; our own card renders the instant we play it.
-        return msg.action.type === 'PLAY' && msg.player !== this.mySeat ? PLAY_GAP_MS : 0;
+        // Opponents' actions are paced; our own render the instant we make them.
+        return msg.player !== this.mySeat ? ACTION_GAP_MS : 0;
       case 'TRICK_WON':
         return TRICK_LINGER_MS;
       case 'DEAL':

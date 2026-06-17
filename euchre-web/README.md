@@ -75,10 +75,11 @@ Two clarifying animations, both built on Svelte's `fly` transition:
 The server and its bots emit events far faster than a human can follow, so the
 client paces them: incoming messages go through a small render queue
 (`game.svelte.ts`) that applies them one at a time, in order, with legible gaps.
-The delays are *minimums* — time a message already spent in flight counts toward
+Pacing covers every action — bids, passes, discards, and card plays alike. The
+delays are *minimums* — time a message already spent in flight counts toward
 them, so a slow reply shows at once while a fast one waits out the remainder.
-Two constants are the knobs (your own card always renders the instant you play
-it):
+Two constants are the knobs (your own actions always render the instant you make
+them):
 
-- `PLAY_GAP_MS` (500ms) — minimum gap between consecutive cards on the table;
+- `ACTION_GAP_MS` (500ms) — minimum gap between consecutive actions (bid, pass, discard, play);
 - `TRICK_LINGER_MS` (1000ms) — how long a finished trick rests before being swept.
