@@ -249,6 +249,18 @@ pub struct Example<'a> {
     pub legal: u32,
 }
 
+/// One reinforcement-learning example for a single head: the input features, the
+/// class that was actually *sampled* during self-play, the legal-class mask, and
+/// the `advantage` — the (baseline-subtracted) return that scales the
+/// policy-gradient update. A positive advantage reinforces the sampled action; a
+/// negative one discourages it.
+pub struct PolicyExample<'a> {
+    pub features: &'a [f32],
+    pub action: usize,
+    pub legal: u32,
+    pub advantage: f32,
+}
+
 impl NetTrainer {
     /// Wraps a freshly initialised net with zeroed Adam state.
     pub fn new(net: Net) -> Self {
@@ -297,6 +309,66 @@ impl NetTrainer {
         grads.scale(1.0 / counted as f32);
         self.adam_step(&grads, lr);
         total_loss / counted as f32
+    }
+
+    /// Runs one Adam step of the REINFORCE policy gradient over a mini-batch,
+    /// returning the mean policy entropy across the batch (a handy convergence
+    /// monitor).
+    ///
+    /// `temperature` is the temperature of the behaviour policy `π_T =
+    /// softmax(logits / T)` that the actions were *sampled* from (see
+    /// [`sample_masked`]); the score function is taken w.r.t. that same policy, so
+    /// training stays on-policy when sampling explores with `T > 1`. For each
+    /// example the gradient w.r.t. the logits is
+    ///
+    /// ```text
+    ///   (1/T) · [ advantage · (π_T − onehot(action))  −  entropy_coef · dH/du ]
+    /// ```
+    ///
+    /// i.e. gradient *ascent* on `advantage · ln π_T(action) + entropy_coef ·
+    /// H(π_T)`. The first term reuses exactly the `softmax − onehot` gradient that
+    /// backs [`masked_softmax_cross_entropy`] (and is gradient-checked there): with
+    /// `advantage = 1`, `entropy_coef = 0`, and `temperature = 1` a step is
+    /// identical to a supervised [`Self::train_batch`] step toward `action`.
+    /// Gradients are summed over the batch and averaged, so the learning rate is
+    /// batch-size independent.
+    pub fn policy_gradient_step(
+        &mut self,
+        batch: &[PolicyExample<'_>],
+        lr: f32,
+        entropy_coef: f32,
+        temperature: f32,
+    ) -> f32 {
+        let t = temperature.max(1e-6);
+        let mut grads = self.net.zero_grads();
+        let mut total_entropy = 0.0;
+        let mut counted = 0usize;
+        for ex in batch {
+            if ex.legal & (1 << ex.action) == 0 {
+                continue;
+            }
+            let acts = self.net.forward_train(ex.features);
+            let logits = acts.last().expect("forward produced logits");
+            // The behaviour policy: softmax over temperature-scaled logits.
+            let scaled: Vec<f32> = logits.iter().map(|z| z / t).collect();
+            let (h, dh) = masked_entropy(&scaled, ex.legal);
+            total_entropy += h;
+            let probs = masked_softmax(&scaled, ex.legal);
+            // (1/T) · [ advantage · (π_T − onehot(action)) − entropy_coef · dH/du ].
+            let mut d_logits = vec![0.0f32; logits.len()];
+            for ((d, &p), &g) in d_logits.iter_mut().zip(&probs).zip(&dh) {
+                *d = (ex.advantage * p - entropy_coef * g) / t;
+            }
+            d_logits[ex.action] -= ex.advantage / t;
+            self.net.backward(&acts, &d_logits, &mut grads);
+            counted += 1;
+        }
+        if counted == 0 {
+            return 0.0;
+        }
+        grads.scale(1.0 / counted as f32);
+        self.adam_step(&grads, lr);
+        total_entropy / counted as f32
     }
 
     /// Applies one Adam update using the accumulated `grads`.
@@ -369,15 +441,13 @@ fn relu(v: &mut [f32]) {
     }
 }
 
-/// The cross-entropy loss of a softmax taken over only the *legal* classes, plus
-/// its gradient w.r.t. the logits.
+/// The softmax probabilities taken over only the *legal* classes.
 ///
 /// `legal` is a bitmask whose bit `k` marks class `k` as available; the softmax
-/// is normalised over those classes alone, so illegal logits never affect the
-/// probabilities and receive zero gradient. The returned gradient is the textbook
-/// `softmax - onehot(target)` restricted to the legal set. `target` must be legal.
-pub fn masked_softmax_cross_entropy(logits: &[f32], legal: u32, target: usize) -> (f32, Vec<f32>) {
-    debug_assert!(legal & (1 << target) != 0, "target class must be legal");
+/// is normalised over those classes alone, so illegal classes always receive
+/// probability zero regardless of their logit. The returned vector has the same
+/// length as `logits`, with zeros in the illegal positions.
+pub fn masked_softmax(logits: &[f32], legal: u32) -> Vec<f32> {
     let mut max = f32::NEG_INFINITY;
     for (k, &z) in logits.iter().enumerate() {
         if legal & (1 << k) != 0 && z > max {
@@ -396,10 +466,76 @@ pub fn masked_softmax_cross_entropy(logits: &[f32], legal: u32, target: usize) -
     for p in &mut probs {
         *p /= sum;
     }
+    probs
+}
+
+/// The cross-entropy loss of a [`masked_softmax`] over the legal classes, plus
+/// its gradient w.r.t. the logits.
+///
+/// The returned gradient is the textbook `softmax - onehot(target)` restricted to
+/// the legal set (illegal logits receive zero gradient). `target` must be legal.
+pub fn masked_softmax_cross_entropy(logits: &[f32], legal: u32, target: usize) -> (f32, Vec<f32>) {
+    debug_assert!(legal & (1 << target) != 0, "target class must be legal");
+    let probs = masked_softmax(logits, legal);
     let loss = -(probs[target].max(1e-30)).ln();
     let mut grad = probs;
     grad[target] -= 1.0;
     (loss, grad)
+}
+
+/// The Shannon entropy `H = -Σ p·ln p` of the [`masked_softmax`] over `logits`,
+/// together with its gradient w.r.t. the logits.
+///
+/// Used as an entropy *bonus* in policy-gradient training: adding `coef·H` to the
+/// objective discourages the policy from collapsing prematurely onto a single
+/// action while it is still learning. The gradient is `dH/dz_k = -p_k·(ln p_k +
+/// H)` on the legal classes (and zero elsewhere); it is pinned to the entropy
+/// definition by a finite-difference test.
+pub fn masked_entropy(logits: &[f32], legal: u32) -> (f32, Vec<f32>) {
+    let probs = masked_softmax(logits, legal);
+    let mut h = 0.0f32;
+    for (k, &p) in probs.iter().enumerate() {
+        if legal & (1 << k) != 0 && p > 0.0 {
+            h -= p * p.ln();
+        }
+    }
+    let mut grad = vec![0.0f32; logits.len()];
+    for (k, &p) in probs.iter().enumerate() {
+        if legal & (1 << k) != 0 && p > 0.0 {
+            grad[k] = -p * (p.ln() + h);
+        }
+    }
+    (h, grad)
+}
+
+/// Samples a legal class from the [`masked_softmax`] of `logits`, sharpened or
+/// softened by `temperature` (1.0 leaves the distribution unchanged; smaller is
+/// greedier, larger is flatter). Sampling drives exploration during self-play; the
+/// deployed agent instead takes the arg-max.
+pub fn sample_masked<R: Rng + ?Sized>(
+    logits: &[f32],
+    legal: u32,
+    temperature: f32,
+    rng: &mut R,
+) -> usize {
+    let t = temperature.max(1e-6);
+    let scaled: Vec<f32> = logits.iter().map(|z| z / t).collect();
+    let probs = masked_softmax(&scaled, legal);
+    let r = rng.random::<f32>();
+    let mut acc = 0.0;
+    let mut last = 0;
+    for (k, &p) in probs.iter().enumerate() {
+        if legal & (1 << k) != 0 {
+            last = k;
+            acc += p;
+            if r <= acc {
+                return k;
+            }
+        }
+    }
+    // Floating-point rounding can leave `r` just past the accumulated mass; fall
+    // back to the last legal class.
+    last
 }
 
 fn read_u32(cursor: &mut &[u8]) -> Option<u32> {
@@ -527,6 +663,145 @@ mod tests {
             .max_by(|&a, &b| logits[a].total_cmp(&logits[b]))
             .unwrap();
         assert_eq!(best, 2);
+    }
+
+    /// The entropy gradient must match a finite-difference estimate of the
+    /// entropy itself — the same correctness bar the cross-entropy gradient meets,
+    /// applied to the entropy bonus used in policy-gradient training.
+    #[test]
+    fn entropy_gradient_matches_finite_differences() {
+        let logits = [0.4f32, -0.7, 1.1, 0.2, -0.3];
+        let legal = 0b11101; // class 1 illegal
+        let (_h, grad) = masked_entropy(&logits, legal);
+        let eps = 1e-3f32;
+        for k in 0..logits.len() {
+            let mut up = logits;
+            up[k] += eps;
+            let mut dn = logits;
+            dn[k] -= eps;
+            let numeric =
+                (masked_entropy(&up, legal).0 - masked_entropy(&dn, legal).0) / (2.0 * eps);
+            assert!(
+                (numeric - grad[k]).abs() < 1e-2,
+                "entropy grad mismatch at {k}: numeric {numeric}, analytic {}",
+                grad[k]
+            );
+            if legal & (1 << k) == 0 {
+                assert_eq!(grad[k], 0.0, "illegal class must get zero entropy gradient");
+            }
+        }
+    }
+
+    /// A REINFORCE step with `advantage = 1` and no entropy bonus must reproduce a
+    /// supervised step toward the same class exactly — anchoring the new
+    /// policy-gradient path to the already gradient-checked cross-entropy path.
+    #[test]
+    fn policy_gradient_reduces_to_cross_entropy_when_advantage_is_one() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let net = Net::new(&[6, 12, 4], &mut rng);
+        let features = [0.3, -0.2, 0.5, 0.1, -0.4, 0.6];
+        let legal = 0b1111;
+        let action = 2;
+
+        let mut supervised = NetTrainer::new(net.clone());
+        supervised.train_batch(
+            &[Example {
+                features: &features,
+                target: action,
+                legal,
+            }],
+            0.05,
+        );
+
+        let mut policy = NetTrainer::new(net);
+        policy.policy_gradient_step(
+            &[PolicyExample {
+                features: &features,
+                action,
+                legal,
+                advantage: 1.0,
+            }],
+            0.05,
+            0.0,
+            1.0,
+        );
+
+        let a = supervised.net().forward(&features);
+        let b = policy.net().forward(&features);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-6, "outputs diverged: {x} vs {y}");
+        }
+    }
+
+    /// A positive advantage must raise the sampled action's probability; a
+    /// negative one must lower it. This is the load-bearing behaviour of the
+    /// policy gradient.
+    #[test]
+    fn advantage_sign_moves_probability_the_right_way() {
+        let mut rng = SmallRng::seed_from_u64(9);
+        let net = Net::new(&[6, 12, 4], &mut rng);
+        let features = [0.1, 0.2, -0.3, 0.4, -0.5, 0.2];
+        let legal = 0b1111;
+        let action = 1;
+        let prob = |t: &NetTrainer| masked_softmax(&t.net().forward(&features), legal)[action];
+
+        let mut up = NetTrainer::new(net.clone());
+        let before = prob(&up);
+        for _ in 0..30 {
+            up.policy_gradient_step(
+                &[PolicyExample {
+                    features: &features,
+                    action,
+                    legal,
+                    advantage: 1.0,
+                }],
+                0.05,
+                0.0,
+                1.0,
+            );
+        }
+        assert!(
+            prob(&up) > before,
+            "positive advantage did not raise p(action)"
+        );
+
+        let mut down = NetTrainer::new(net);
+        let before = prob(&down);
+        for _ in 0..30 {
+            down.policy_gradient_step(
+                &[PolicyExample {
+                    features: &features,
+                    action,
+                    legal,
+                    advantage: -1.0,
+                }],
+                0.05,
+                0.0,
+                1.0,
+            );
+        }
+        assert!(
+            prob(&down) < before,
+            "negative advantage did not lower p(action)"
+        );
+    }
+
+    /// Sampling only ever returns a legal class, and concentrates on the class
+    /// whose logit dominates.
+    #[test]
+    fn sampling_respects_legality_and_logits() {
+        let mut rng = SmallRng::seed_from_u64(123);
+        let legal = 0b1011; // classes 0, 1, 3
+        let logits = [0.0f32, 8.0, 0.0, 0.0]; // class 1 dominates
+        let mut hits = 0;
+        for _ in 0..2000 {
+            let k = sample_masked(&logits, legal, 1.0, &mut rng);
+            assert!(legal & (1 << k) != 0, "sampled an illegal class {k}");
+            if k == 1 {
+                hits += 1;
+            }
+        }
+        assert!(hits > 1900, "dominant class sampled only {hits}/2000 times");
     }
 
     #[test]

@@ -1,17 +1,17 @@
 //! Integration tests for the [`NeuralAgent`], run as whole matches through the
 //! real engine.
 //!
-//! They pin down the property that justifies the agent: its *search-free*,
-//! distilled policy crushes random play and carries the
-//! [`AdvancedAgent`](euchre_agents::AdvancedAgent)'s edge over the plain
-//! heuristic, while staying competitive with the teacher it was cloned from. A
+//! They pin down the property that justifies the agent: its *search-free* policy
+//! crushes random play, carries a clear edge over the plain heuristic, and — after
+//! self-play reinforcement fine-tuning — actually *beats* the
+//! [`AdvancedAgent`](euchre_agents::AdvancedAgent) it was cloned from. A
 //! four-at-a-table match also fuzzes the feature encoder and the legality of
 //! every move the net picks against the engine's own checks.
 //!
-//! The shipped model is distilled from the advanced agent, so the agent is
-//! expected to land *near* it (a clean clone is slightly below its teacher); a
-//! broken model would collapse toward random play and trip these bars. The
-//! headline numbers come from `cargo run --release -p euchre-eval -- neural advanced`.
+//! The shipped model is the behavioural clone fine-tuned by self-play RL
+//! (`examples/train_neural.rs` then `examples/train_rl.rs`); a broken model would
+//! collapse toward random play and trip these bars. The headline numbers come from
+//! `cargo run --release -p euchre-eval -- neural advanced`.
 
 use euchre_agents::{AdvancedAgent, HeuristicAgent, NeuralAgent, RandomAgent};
 use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
@@ -99,7 +99,7 @@ fn neural_team_beats_the_heuristic_team() {
 }
 
 #[test]
-fn neural_stays_competitive_with_its_teacher() {
+fn neural_beats_its_teacher() {
     let pairs: usize = 150;
     let wins: u32 = (0..pairs)
         .map(|p| neural_wins_in_pair(p as u64, || Box::new(AdvancedAgent::new())))
@@ -107,11 +107,13 @@ fn neural_stays_competitive_with_its_teacher() {
     let total = (pairs * 2) as u32;
 
     eprintln!("[neural vs advanced, paired] {wins}/{total}");
-    // A faithful clone lands just below its teacher (measured ~49%). This is a
-    // regression guard: a broken model would crater toward the ~10–15% a random
-    // agent manages against the advanced agent.
+    // The behavioural clone starts level with its teacher; self-play RL fine-tuning
+    // pushes it clearly ahead (measured ~63% here, ~62% on the eval harness). The
+    // 56% bar leaves headroom while still asserting the agent *beats* the advanced
+    // agent — the whole point of the RL stage. A model that regressed to the bare
+    // clone (~50%) or toward random play (~10–15%) would trip it.
     assert!(
-        wins * 100 >= total * 42,
+        wins * 100 >= total * 56,
         "neural won only {wins}/{total} against the advanced agent it was cloned from"
     );
 }

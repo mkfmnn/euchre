@@ -16,7 +16,7 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 
 use super::features::Head;
-use super::net::{Example, Net, NetTrainer};
+use super::net::{Example, Net, NetTrainer, PolicyExample};
 
 /// One labelled decision: the head it belongs to, the input features, the index
 /// of the class the teacher chose, and the mask of classes that were legal.
@@ -81,6 +81,58 @@ impl NeuralModel {
         }
         let nets: [Net; 4] = nets.try_into().ok()?;
         Some(NeuralModel { nets })
+    }
+}
+
+/// The four policy networks plus the Adam optimiser state needed to fine-tune
+/// them by reinforcement learning, built from an already-trained [`NeuralModel`].
+///
+/// Where [`train`] fits the heads from a fixed pile of teacher-labelled samples,
+/// `PolicyTrainer` improves them *online* from self-play: the caller samples
+/// actions from the current policy ([`PolicyTrainer::net`]), plays them out to
+/// collect rewards, and feeds the resulting [`PolicyExample`]s back through
+/// [`PolicyTrainer::step`] (REINFORCE). The engine-dependent half — playing the
+/// games and turning hand outcomes into advantages — lives in the `train_rl`
+/// example, keeping this module free of any dependency on the engine.
+pub struct PolicyTrainer {
+    trainers: [NetTrainer; 4],
+}
+
+impl PolicyTrainer {
+    /// Wraps a model's four nets with fresh Adam state for fine-tuning. The
+    /// model's weights are the warm start (typically the behaviourally cloned
+    /// model); the optimiser moments begin at zero.
+    pub fn from_model(model: &NeuralModel) -> Self {
+        let trainers = std::array::from_fn(|i| NetTrainer::new(model.nets[i].clone()));
+        PolicyTrainer { trainers }
+    }
+
+    /// A snapshot of the current four nets as a [`NeuralModel`] (for evaluation,
+    /// checkpointing, or saving). Cheap relative to a training step but it does
+    /// clone the weights, so snapshot at iteration boundaries rather than per step.
+    pub fn model(&self) -> NeuralModel {
+        let nets = std::array::from_fn(|i| self.trainers[i].net().clone());
+        NeuralModel { nets }
+    }
+
+    /// The current network for `head`, used to score logits while sampling
+    /// self-play actions.
+    pub fn net(&self, head: Head) -> &Net {
+        self.trainers[head.index()].net()
+    }
+
+    /// Runs one REINFORCE Adam step for `head` over `batch`, returning the mean
+    /// policy entropy (a convergence monitor). See
+    /// [`NetTrainer::policy_gradient_step`].
+    pub fn step(
+        &mut self,
+        head: Head,
+        batch: &[PolicyExample<'_>],
+        lr: f32,
+        entropy_coef: f32,
+        temperature: f32,
+    ) -> f32 {
+        self.trainers[head.index()].policy_gradient_step(batch, lr, entropy_coef, temperature)
     }
 }
 
@@ -284,5 +336,56 @@ mod tests {
     #[test]
     fn load_rejects_bad_magic() {
         assert!(NeuralModel::load(b"nope and some trailing bytes").is_none());
+    }
+
+    /// A `PolicyTrainer` snapshots back to a model identical to its start, and a
+    /// step with a reinforcing advantage raises the chosen action's probability —
+    /// the contract the `train_rl` example relies on.
+    #[test]
+    fn policy_trainer_snapshots_and_improves() {
+        let (model, _) = train(
+            &[Sample {
+                head: Head::Play,
+                features: vec![0.0; Head::Play.input_dim()],
+                target: 0,
+                legal: 0b11,
+            }],
+            TrainConfig::default(),
+        );
+        let mut pt = PolicyTrainer::from_model(&model);
+
+        // A fresh snapshot reproduces the warm-start weights exactly.
+        let snap = pt.model();
+        let input = vec![0.1; Head::Play.input_dim()];
+        assert_eq!(
+            snap.net(Head::Play).forward(&input),
+            model.net(Head::Play).forward(&input)
+        );
+
+        let features = vec![0.2; Head::Play.input_dim()];
+        let action = 1;
+        let legal = 0b11;
+        let p0 = super::super::net::masked_softmax(&pt.net(Head::Play).forward(&features), legal)
+            [action];
+        for _ in 0..20 {
+            pt.step(
+                Head::Play,
+                &[PolicyExample {
+                    features: &features,
+                    action,
+                    legal,
+                    advantage: 1.0,
+                }],
+                0.02,
+                0.0,
+                1.0,
+            );
+        }
+        let p1 = super::super::net::masked_softmax(&pt.net(Head::Play).forward(&features), legal)
+            [action];
+        assert!(
+            p1 > p0,
+            "policy gradient did not reinforce the action: {p0} -> {p1}"
+        );
     }
 }

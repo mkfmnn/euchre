@@ -21,9 +21,11 @@
 //!   (Perfect-Information Monte Carlo). It reuses [`AdvancedAgent`] for bidding
 //!   and beats it in the play.
 //! * [`NeuralAgent`] — a *learned*, search-free agent. Four small policy networks
-//!   (one per decision) are trained by behavioural cloning of a strong teacher, so
-//!   each move is a single forward pass. See the [`neural`] module for the model,
-//!   the training loop, and the design rationale.
+//!   (one per decision) are trained by behavioural cloning of a strong teacher and
+//!   then fine-tuned by self-play reinforcement learning, so each move is a single
+//!   forward pass yet the agent plays *better* than the teacher it was cloned from.
+//!   See the [`neural`] module for the model, the training loop, and the design
+//!   rationale.
 //!
 //! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
