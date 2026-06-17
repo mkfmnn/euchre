@@ -19,6 +19,8 @@ cargo test --workspace test_name        # run a single test by name (substring f
 cargo clippy --workspace --all-targets  # lint
 cargo fmt                        # format
 
+cargo run -p euchre-engine --bin euchre-play     # play a terminal match: one human (default South) vs three bots; pass a seat name to sit elsewhere
+
 cargo run -p euchre-server                       # serve one table on EUCHRE_ADDR (default 127.0.0.1:8080), route /ws
 cargo run -p euchre-server --example cli_client  # connect a terminal client to it
 

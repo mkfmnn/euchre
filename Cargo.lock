@@ -297,6 +297,7 @@ dependencies = [
 name = "euchre-engine"
 version = "0.1.0"
 dependencies = [
+ "euchre-agents",
  "euchre-interface",
  "rand 0.10.1",
  "serde",

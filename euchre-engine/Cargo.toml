@@ -7,6 +7,15 @@ edition = "2024"
 euchre-interface = { path = "../euchre-interface" }
 rand = { version = "0.10.1", features = ["chacha"] }
 serde = { version = "1", features = ["derive"], optional = true }
+# Used only by the `euchre-play` binary, to fill the three bot seats with real
+# strategies (the library proper still ships no agents). `euchre-agents` depends
+# on this crate only as a dev-dependency, so this back-edge does not form a
+# normal-dependency cycle and Cargo accepts it.
+euchre-agents = { path = "../euchre-agents" }
+
+[[bin]]
+name = "euchre-play"
+path = "src/bin/play.rs"
 
 [features]
 serde = ["dep:serde", "euchre-interface/serde"]
