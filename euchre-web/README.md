@@ -69,3 +69,16 @@ Two clarifying animations, both built on Svelte's `fly` transition:
 
 - a played card flies from its player's seat onto the table;
 - a completed trick is swept off the table toward the seat that won it.
+
+## Pacing
+
+The server and its bots emit events far faster than a human can follow, so the
+client paces them: incoming messages go through a small render queue
+(`game.svelte.ts`) that applies them one at a time, in order, with legible gaps.
+The delays are *minimums* — time a message already spent in flight counts toward
+them, so a slow reply shows at once while a fast one waits out the remainder.
+Two constants are the knobs (your own card always renders the instant you play
+it):
+
+- `PLAY_GAP_MS` (500ms) — minimum gap between consecutive cards on the table;
+- `TRICK_LINGER_MS` (1000ms) — how long a finished trick rests before being swept.

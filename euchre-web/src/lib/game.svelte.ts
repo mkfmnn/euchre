@@ -6,6 +6,11 @@
 //! and `TRICK_WON` sweeps the table. Hidden information the wire omits is
 //! reconstructed locally — most notably the dealer's picked-up up-card, which is
 //! folded into our hand exactly when the server asks us to discard.
+//!
+//! Because the server (and its bots) emit events far faster than a human can
+//! follow, messages are not applied as they arrive: they go through a small
+//! render queue that paces them out (see the pacing constants below), applying
+//! one at a time in order so cards appear with legible gaps.
 
 import type {
   ActionBubble,
@@ -25,6 +30,24 @@ import type {
   TurnHint,
 } from './protocol';
 import { SUIT_SYMBOL, parseCard, sortHand } from './cards';
+
+// --- Render pacing (all milliseconds) ---------------------------------------
+//
+// The server fires events as fast as the bots decide, which is too quick to
+// follow, so the client paces them out. Incoming messages are queued and
+// rendered strictly in order, one at a time. The delays below are *minimums*:
+// time a message already spent in flight counts toward them, so a play that
+// takes 1.2s to arrive shows at once, while one that arrives in 0.2s waits out
+// the remaining 0.3s. Your own card is exempt — it renders the instant you play
+// it (you cannot act before your turn unlocks, which is itself gated behind the
+// previous card).
+
+/** Minimum gap between two consecutive cards appearing on the table. */
+const PLAY_GAP_MS = 500;
+/** How long a completed trick rests on the table before being swept up. */
+const TRICK_LINGER_MS = 1000;
+/** How long a hand's result lingers before the next hand is dealt. */
+const HAND_END_PAUSE_MS = 1500;
 
 const SEATS: Seat[] = ['North', 'East', 'South', 'West'];
 
@@ -55,6 +78,12 @@ function describeHand(score: HandScore): string {
   if (score.euchred) return `${who} euchred the makers for ${points}!`;
   if (score.march) return `${who} swept the hand${score.alone ? ' alone' : ''} for ${points}!`;
   return `${who} made it for ${points}.`;
+}
+
+/** Whether rendering this message advances the pacing clock (a visible beat). */
+function paceSetting(msg: ServerMsg): boolean {
+  if (msg.type === 'UPDATE') return msg.action.type === 'PLAY';
+  return msg.type === 'TRICK_WON' || msg.type === 'HAND_COMPLETE';
 }
 
 export class GameStore {
@@ -111,6 +140,14 @@ export class GameStore {
   private timers: ReturnType<typeof setTimeout>[] = [];
   private collectTimers: ReturnType<typeof setTimeout>[] = [];
 
+  // --- render queue -------------------------------------------------------
+  /** Server messages awaiting their paced turn to be rendered, in order. */
+  private queue: ServerMsg[] = [];
+  /** Pending timer for the head of the queue, or null when idle/running. */
+  private pumpTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the last pace-setting event (a play, sweep, or hand result) rendered. */
+  private lastRenderAt = Number.NEGATIVE_INFINITY;
+
   // --- derived (used by the UI) ------------------------------------------
   get sittingOut(): Seat | null {
     return this.alone && this.maker ? partnerOf(this.maker) : null;
@@ -134,6 +171,7 @@ export class GameStore {
     this.preferredSeat = seat;
     this.error = null;
     this.status = 'connecting';
+    this.resetQueue();
 
     let ws: WebSocket;
     try {
@@ -150,7 +188,7 @@ export class GameStore {
     };
     ws.onmessage = (event) => {
       try {
-        this.handle(JSON.parse(event.data as string) as ServerMsg);
+        this.enqueue(JSON.parse(event.data as string) as ServerMsg);
       } catch (err) {
         console.error('failed to handle server message', err);
       }
@@ -163,6 +201,7 @@ export class GameStore {
     };
     ws.onclose = () => {
       this.clearTimers();
+      this.resetQueue();
       if (this.status === 'joined') {
         this.status = 'closed';
       } else if (this.status !== 'error') {
@@ -196,8 +235,61 @@ export class GameStore {
     this.endMyTurn();
   }
 
+  // --- render queue -------------------------------------------------------
+  /** Queue a freshly-arrived server message and keep the pump running. */
+  private enqueue(msg: ServerMsg): void {
+    this.queue.push(msg);
+    if (this.pumpTimer === null) this.drain();
+  }
+
+  /**
+   * Render as many queued messages as are due right now, then arm a timer for
+   * the next one that still has to wait. The minimum nature falls out of
+   * comparing against the wall clock: a message overdue by the time we reach it
+   * renders immediately.
+   */
+  private drain = (): void => {
+    this.pumpTimer = null;
+    for (;;) {
+      const msg = this.queue[0];
+      if (!msg) return;
+      const due = this.lastRenderAt + this.delayBefore(msg);
+      const wait = due - performance.now();
+      if (wait > 0) {
+        this.pumpTimer = setTimeout(this.drain, wait);
+        return;
+      }
+      this.queue.shift();
+      this.apply(msg);
+      if (paceSetting(msg)) this.lastRenderAt = performance.now();
+    }
+  };
+
+  /** The minimum delay, since the last paced render, before showing `msg`. */
+  private delayBefore(msg: ServerMsg): number {
+    switch (msg.type) {
+      case 'UPDATE':
+        // Opponents' cards are paced; our own card renders the instant we play it.
+        return msg.action.type === 'PLAY' && msg.player !== this.mySeat ? PLAY_GAP_MS : 0;
+      case 'TRICK_WON':
+        return TRICK_LINGER_MS;
+      case 'DEAL':
+      case 'GAME_OVER':
+        return HAND_END_PAUSE_MS;
+      default:
+        return 0;
+    }
+  }
+
+  private resetQueue(): void {
+    if (this.pumpTimer !== null) clearTimeout(this.pumpTimer);
+    this.pumpTimer = null;
+    this.queue = [];
+    this.lastRenderAt = Number.NEGATIVE_INFINITY;
+  }
+
   // --- incoming messages --------------------------------------------------
-  private handle(msg: ServerMsg): void {
+  private apply(msg: ServerMsg): void {
     switch (msg.type) {
       case 'JOINED': {
         this.mySeat = msg.your_seat;
@@ -270,23 +362,8 @@ export class GameStore {
       }
       case 'TRICK_WON': {
         this.tricksWon[msg.player] += 1;
-        if (this.table.length > 0) {
-          this.clearCollectTimers();
-          this.collecting = { plays: this.table, winner: msg.player };
-          this.table = [];
-          // After a beat the cards fly to the winner (their `out` transition),
-          // then the now-empty collecting layer is torn down.
-          this.collectTimers.push(
-            setTimeout(() => {
-              if (this.collecting) this.collecting.plays = [];
-            }, 600),
-          );
-          this.collectTimers.push(
-            setTimeout(() => {
-              this.collecting = null;
-            }, 1050),
-          );
-        }
+        // The trick has already lingered (the queue held this message), so sweep now.
+        if (this.table.length > 0) this.sweep(msg.player);
         break;
       }
       case 'HAND_COMPLETE': {
@@ -349,6 +426,25 @@ export class GameStore {
   }
 
   // --- helpers ------------------------------------------------------------
+  /** Lift the finished trick off the felt and fly it to the winner. */
+  private sweep(winner: Seat): void {
+    this.clearCollectTimers();
+    this.collecting = { plays: this.table, winner };
+    this.table = [];
+    // Let the cards mount in place, then trigger their `out` transition toward
+    // the winner; tear the layer down once that animation has run.
+    this.collectTimers.push(
+      setTimeout(() => {
+        if (this.collecting) this.collecting.plays = [];
+      }, 30),
+    );
+    this.collectTimers.push(
+      setTimeout(() => {
+        this.collecting = null;
+      }, 30 + 460),
+    );
+  }
+
   private send(msg: ClientMsg): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
