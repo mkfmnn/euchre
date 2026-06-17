@@ -28,8 +28,7 @@
 //!   out so a policy-gradient fine-tune could be added later.
 //! * **A hand-written MLP over a deep-learning framework.** The networks are
 //!   tiny, so an explicit, gradient-checked implementation (see [`net`]) keeps the
-//!   numerics verifiable and the inference path dependency-free and deterministic
-//!   — matching the rest of this workspace, which hand-rolls its stats too.
+//!   the inference path lightweight and deterministic.
 //! * **Trump-relative feature encoding** (see [`features`]) so the net learns
 //!   card values once rather than once per suit — the dominant quality lever.
 //!

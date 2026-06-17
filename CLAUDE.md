@@ -105,8 +105,7 @@ Two layers:
 - `NeuralAgent` — a *learned*, search-free agent. Four small policy MLPs (one per
   decision) are trained by **behavioural cloning** of a strong teacher, so every
   move is a single forward pass — no search, by design. The `neural` module is
-  self-contained: `net.rs` is a hand-written, gradient-checked MLP + Adam (no ML
-  dependency, matching the project's verifiable-numerics bent); `features.rs`
+  self-contained: `net.rs` is a hand-written, gradient-checked MLP + Adam; `features.rs`
   encodes the `GameView` in a **trump-relative** frame (cards numbered by their
   role relative to trump) so suit symmetry is learned once; `train.rs` is the
   model bundle + supervised loop. The trained weights ship embedded
@@ -114,7 +113,7 @@ Two layers:
   regenerates them (it, not the library, depends on the engine to generate games),
   and the `tests/neural.rs` integration test asserts the agent beats random and the
   heuristic and stays competitive with its teacher. The module docs hold the
-  rationale (cloning over RL, hand-rolled MLP over a framework, the encoding).
+  design rationale.
 
 ### `euchre-server` — websocket multiplayer (walking skeleton)
 
@@ -154,7 +153,7 @@ therefore run to the real target score and are scored purely on who won.
   two identically-seeded stochastic agents don't play in lockstep.
 - **`stats.rs`** — `wilson_interval` (CI on a win rate), `mcnemar` (the paired
   test for the duplicate design), and `Sprt` (sequential test for early stopping,
-  specified in Elo). No external stats dependency; keep formulas verifiable.
+  specified in Elo).
 - **`tournament.rs`** — round-robin over a pool of `Contestant`s. `run_round_robin`
   plays every pair via the same `run_pair` machinery (disjoint deck-seed bands per
   pairing, so results stay independent) and aggregates into a `wins_matrix` for
@@ -163,7 +162,7 @@ therefore run to the real target score and are scored purely on who won.
   `fit` over the whole win matrix (Hunter's MM algorithm), regularised by a small
   prior of virtual games against a rating-0 anchor (keeps sweepers finite, pins
   the scale). Reports per-agent standard errors (relative to the pool mean) from
-  the inverse Fisher information. Same no-external-deps, verifiable-formulas rule.
+  the inverse Fisher information.
 - **`lib.rs`** — `builtin(name)` registry mapping agent names to factories; add
   new agents here so the CLI and tournament can name them.
 - **`main.rs`** — the `euchre-eval` binary (clap), with fixed-games and `--sprt`

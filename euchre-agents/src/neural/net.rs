@@ -1,10 +1,7 @@
 //! A small, self-contained multilayer perceptron with hand-written
 //! backpropagation, Adam, and a compact serialization format.
 //!
-//! The whole point of keeping this in-tree rather than reaching for a deep
-//! learning framework is the same one the [`stats`](../../euchre_eval/stats)
-//! module makes: the numerics stay verifiable and the inference path stays
-//! dependency-free and deterministic. The networks here are tiny (a couple of
+//! The networks here are tiny (a couple of
 //! hundred inputs, one or two hidden layers, at most 24 outputs), so an explicit
 //! forward/backward pass is both fast and easy to audit — and a finite-difference
 //! gradient check (see the tests) pins the backward pass to the forward one.
