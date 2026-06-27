@@ -34,7 +34,7 @@ pub enum UpcardBid {
     /// Decline to make the up-card's suit trump and let the auction continue.
     Pass,
     /// Order up the up-card's suit as trump.
-    OrderUp(Bid),
+    OrderUp { alone: bool },
 }
 
 /// An agent's choice in the second round of bidding, when it may name a suit.
@@ -47,25 +47,7 @@ pub enum CallBid {
     ///
     /// The suit of the (now turned-down) up-card may not be chosen; the engine
     /// rejects an attempt to call it.
-    Call { suit: Suit, bid: Bid },
-}
-
-/// Whether the maker plays with or without their partner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Bid {
-    /// Play normally, with the partner participating.
-    WithPartner,
-    /// Play alone: the partner sits out the hand and the maker plays all five
-    /// tricks solo for a chance at a larger bonus.
-    Alone,
-}
-
-impl Bid {
-    /// Whether this bid commits the maker to playing alone.
-    pub const fn is_alone(self) -> bool {
-        matches!(self, Bid::Alone)
-    }
+    Call { suit: Suit, alone: bool },
 }
 
 /// The strategy an AI bot implements to play Euchre.
@@ -80,22 +62,22 @@ impl Bid {
 /// models). The engine guarantees that calls for a single agent are made
 /// sequentially, never concurrently.
 pub trait Agent {
-    /// First bidding round: decide whether to order up the turned `up_card`,
+    /// First bidding round: decide whether to order up the turned `view.up_card`,
     /// making its suit trump.
     ///
     /// `view.contract` is `None` at this point. Returning
-    /// [`UpcardBid::OrderUp`] fixes trump as `up_card.suit`.
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid;
+    /// [`UpcardBid::OrderUp`] fixes trump as `view.up_card.suit`.
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid;
 
     /// Second bidding round: decide whether to name a trump suit.
     ///
-    /// Reached only if every seat passed in the first round. `turned_down` is
-    /// the suit of the up-card that was rejected; it is not a legal choice.
+    /// Reached only if every seat passed in the first round.
+    /// `view.up_card.suit` is not a legal choice.
     ///
     /// In some house rules the dealer is forced to call rather than pass on
-    /// this round ("stick the dealer"); enforcing that is the engine's job, but
-    /// agents may inspect `view` to detect when it applies to them.
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid;
+    /// this round ("stick the dealer"); agents should inspect `view` to
+    /// determine if it applies to them.
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid;
 
     /// Choose which card to discard after, as dealer, picking up the ordered-up
     /// card.
@@ -138,18 +120,11 @@ pub enum HandResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HandScore {
-    /// The team that named trump for this hand.
-    pub makers: crate::game::Team,
     /// Tricks won by the makers (0..=5).
     pub maker_tricks: u8,
-    /// Whether the makers were *euchred* (failed to win at least three tricks).
-    pub euchred: bool,
-    /// Whether the makers swept all five tricks (a *march*).
-    pub march: bool,
-    /// Whether the hand was played alone.
-    pub alone: bool,
-    /// Points awarded for the hand, and to which team.
-    pub points_awarded: (crate::game::Team, u8),
+    /// Net points awarded to the agent's team;
+    /// negative if the other team earned points.
+    pub points_awarded: i8,
 }
 
 #[cfg(test)]

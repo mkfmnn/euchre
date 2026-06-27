@@ -11,60 +11,34 @@ use crate::card::{Card, Suit};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Seat {
-    North,
-    East,
-    South,
-    West,
+    First,
+    Second,
+    Third,
+    Dealer,
 }
 
 impl Seat {
     /// All four seats in clockwise order starting from `North`.
-    pub const ALL: [Seat; 4] = [Seat::North, Seat::East, Seat::South, Seat::West];
+    pub const ALL: [Seat; 4] = [Seat::First, Seat::Second, Seat::Third, Seat::Dealer];
 
     /// The seat to the immediate left (the next seat clockwise), which is the
     /// next to act or play.
     pub const fn next(self) -> Seat {
         match self {
-            Seat::North => Seat::East,
-            Seat::East => Seat::South,
-            Seat::South => Seat::West,
-            Seat::West => Seat::North,
+            Seat::First => Seat::Second,
+            Seat::Second => Seat::Third,
+            Seat::Third => Seat::Dealer,
+            Seat::Dealer => Seat::First,
         }
     }
 
     /// This seat's partner, sitting directly across the table.
     pub const fn partner(self) -> Seat {
         match self {
-            Seat::North => Seat::South,
-            Seat::South => Seat::North,
-            Seat::East => Seat::West,
-            Seat::West => Seat::East,
-        }
-    }
-
-    /// The team this seat belongs to.
-    pub const fn team(self) -> Team {
-        match self {
-            Seat::North | Seat::South => Team::NorthSouth,
-            Seat::East | Seat::West => Team::EastWest,
-        }
-    }
-}
-
-/// One of the two partnerships.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Team {
-    NorthSouth,
-    EastWest,
-}
-
-impl Team {
-    /// The opposing team.
-    pub const fn opponent(self) -> Team {
-        match self {
-            Team::NorthSouth => Team::EastWest,
-            Team::EastWest => Team::NorthSouth,
+            Seat::First => Seat::Third,
+            Seat::Third => Seat::First,
+            Seat::Second => Seat::Dealer,
+            Seat::Dealer => Seat::Second,
         }
     }
 }
@@ -180,14 +154,17 @@ pub struct GameRules {
 pub struct GameView<'a> {
     /// The seat this agent occupies.
     pub seat: Seat,
-    /// The seat that dealt this hand.
-    pub dealer: Seat,
+    /// The card turned up for bidding by the dealer at the end of the deal.
+    pub up_card: Card,
     /// The cards currently in the agent's hand.
     pub hand: &'a [Card],
     /// The agreed contract for this hand, once trump has been named.
     ///
     /// This is `None` during bidding, before a trump suit has been chosen.
     pub contract: Option<Contract>,
+    /// The card discarded by the dealer. This is only populated for the
+    /// dealer's view, and only if the dealer did discard.
+    pub discarded: Option<Card>,
     /// The trick currently in progress.
     pub current_trick: &'a Trick,
     /// Completed tricks this hand, oldest first, each paired with the seat that
@@ -210,18 +187,8 @@ impl GameView<'_> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scores {
-    pub north_south: u8,
-    pub east_west: u8,
-}
-
-impl Scores {
-    /// The score for a given team.
-    pub const fn for_team(&self, team: Team) -> u8 {
-        match team {
-            Team::NorthSouth => self.north_south,
-            Team::EastWest => self.east_west,
-        }
-    }
+    pub us: u8,
+    pub them: u8,
 }
 
 #[cfg(test)]
