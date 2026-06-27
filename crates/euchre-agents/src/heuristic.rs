@@ -16,7 +16,7 @@
 //!   can, ducks when its partner is already winning, and sloughs its weakest
 //!   card when it cannot win.
 
-use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Rank, Suit, UpcardBid};
+use euchre_interface::{Agent, CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
 
 /// Hand-strength score at or above which the agent makes trump.
 const MAKE_THRESHOLD: i32 = 9;
@@ -39,7 +39,7 @@ impl HeuristicAgent {
     /// Whether this seat is the dealer forced to name a suit under the
     /// "stick the dealer" rule, and so may not pass the second round.
     fn is_stuck(view: &GameView<'_>) -> bool {
-        view.rules.stick_the_dealer && view.seat == view.dealer
+        view.rules.stick_the_dealer && view.seat == Seat::Dealer
     }
 
     /// Chooses a card to lead (the agent is first to play this trick).
@@ -55,7 +55,7 @@ impl HeuristicAgent {
         // As the maker, draw the opponents' trump by leading our highest.
         let we_made = view
             .contract
-            .map(|c| c.maker.team() == view.seat.team())
+            .map(|c| view.seat.same_team(c.maker))
             .unwrap_or(false);
         let trump_held = legal.iter().filter(|c| c.is_trump(trump)).count();
         if we_made && trump_held >= 2 {
@@ -96,12 +96,12 @@ impl HeuristicAgent {
 }
 
 impl Agent for HeuristicAgent {
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid {
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid {
+        let up_card = view.up_card;
         let trump = up_card.suit;
         let me = view.seat;
-        let dealer = view.dealer;
 
-        let strength = if dealer == me {
+        let strength = if me == Seat::Dealer {
             // We are the dealer: we would take the up-card and bury our worst.
             // Score the six-card hand; the discard step trims the weakest card.
             let mut cards = view.hand.to_vec();
@@ -112,7 +112,7 @@ impl Agent for HeuristicAgent {
             // The dealer pockets the up-card as trump: a gift to our side if the
             // dealer is us or our partner, a handicap if it is an opponent.
             let gift = trump_card_value(up_card, trump);
-            if dealer == me.partner() {
+            if me.partner() == Seat::Dealer {
                 base + gift
             } else {
                 base - gift
@@ -120,15 +120,16 @@ impl Agent for HeuristicAgent {
         };
 
         if strength >= ALONE_THRESHOLD {
-            UpcardBid::OrderUp(Bid::Alone)
+            UpcardBid::OrderUp { alone: true }
         } else if strength >= MAKE_THRESHOLD {
-            UpcardBid::OrderUp(Bid::WithPartner)
+            UpcardBid::OrderUp { alone: false }
         } else {
             UpcardBid::Pass
         }
     }
 
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+        let turned_down = view.up_card.suit;
         // Score every nameable suit and keep the best.
         let best = Suit::ALL
             .into_iter()
@@ -139,16 +140,10 @@ impl Agent for HeuristicAgent {
         let (suit, strength) = best;
 
         if strength >= ALONE_THRESHOLD {
-            CallBid::Call {
-                suit,
-                bid: Bid::Alone,
-            }
+            CallBid::Call { suit, alone: true }
         } else if strength >= MAKE_THRESHOLD || Self::is_stuck(view) {
             // Clear the bar, or take the best suit anyway when forced to call.
-            CallBid::Call {
-                suit,
-                bid: Bid::WithPartner,
-            }
+            CallBid::Call { suit, alone: false }
         } else {
             CallBid::Pass
         }
@@ -319,9 +314,10 @@ mod tests {
     ) -> GameView<'a> {
         GameView {
             seat,
-            dealer: Seat::North,
+            up_card: card(Rank::Nine, Suit::Spades),
             hand,
             contract: Some(contract),
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -329,15 +325,18 @@ mod tests {
         }
     }
 
-    fn bidding_view<'a>(hand: &'a [Card], seat: Seat, dealer: Seat) -> GameView<'a> {
+    /// A bidding view for `seat` with `up_card` turned up; the dealer is always
+    /// `Seat::Dealer`.
+    fn bidding_view<'a>(hand: &'a [Card], seat: Seat, up_card: Card) -> GameView<'a> {
         // A throwaway empty trick to borrow for the view during bidding.
         static EMPTY: std::sync::OnceLock<Trick> = std::sync::OnceLock::new();
         let trick = EMPTY.get_or_init(Trick::new);
         GameView {
             seat,
-            dealer,
+            up_card,
             hand,
             contract: None,
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -374,12 +373,9 @@ mod tests {
             card(Rank::King, Suit::Spades),
             card(Rank::Ace, Suit::Hearts),
         ];
-        // West is dealer (an opponent), so ordering up gives them the up-card.
-        let view = bidding_view(&strong, Seat::North, Seat::West);
-        assert!(matches!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::OrderUp(_)
-        ));
+        // The dealer is an opponent, so ordering up gives them the up-card.
+        let view = bidding_view(&strong, Seat::First, card(Rank::Nine, Suit::Spades));
+        assert!(matches!(agent.bid_upcard(&view), UpcardBid::OrderUp { .. }));
 
         let junk = [
             card(Rank::Nine, Suit::Hearts),
@@ -388,11 +384,8 @@ mod tests {
             card(Rank::Queen, Suit::Diamonds),
             card(Rank::Nine, Suit::Clubs),
         ];
-        let view = bidding_view(&junk, Seat::North, Seat::West);
-        assert_eq!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::Pass
-        );
+        let view = bidding_view(&junk, Seat::First, card(Rank::Nine, Suit::Spades));
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::Pass);
     }
 
     #[test]
@@ -409,11 +402,11 @@ mod tests {
         ];
         let contract = Contract {
             trump: Suit::Spades,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: false,
         };
         let trick = Trick::new();
-        let view = play_view(&hand, &trick, Seat::North, contract);
+        let view = play_view(&hand, &trick, Seat::First, contract);
         assert_eq!(agent.discard(&view), card(Rank::Nine, Suit::Hearts));
     }
 
@@ -430,11 +423,11 @@ mod tests {
         ];
         let contract = Contract {
             trump: Suit::Spades,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: false,
         };
         let trick = Trick::new();
-        let view = play_view(&hand, &trick, Seat::North, contract);
+        let view = play_view(&hand, &trick, Seat::First, contract);
         let discard = agent.discard(&view);
         assert_ne!(discard.rank, Rank::Ace);
         assert!(!discard.is_trump(Suit::Spades));
@@ -450,11 +443,11 @@ mod tests {
         ];
         let contract = Contract {
             trump: Suit::Spades,
-            maker: Seat::South,
+            maker: Seat::Third,
             alone: false,
         };
         let trick = Trick::new();
-        let view = play_view(&hand, &trick, Seat::North, contract);
+        let view = play_view(&hand, &trick, Seat::First, contract);
         assert_eq!(agent.play_card(&view, &hand), card(Rank::Ace, Suit::Hearts));
     }
 
@@ -465,7 +458,7 @@ mod tests {
         let mut trick = Trick::new();
         // East leads the king of hearts; we (South) hold two winning hearts.
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::King, Suit::Hearts),
         });
         let hand = [
@@ -477,10 +470,10 @@ mod tests {
         let legal = [card(Rank::Ace, Suit::Hearts)];
         let contract = Contract {
             trump,
-            maker: Seat::East,
+            maker: Seat::Second,
             alone: false,
         };
-        let view = play_view(&hand, &trick, Seat::South, contract);
+        let view = play_view(&hand, &trick, Seat::Third, contract);
         assert_eq!(
             agent.play_card(&view, &legal),
             card(Rank::Ace, Suit::Hearts)
@@ -494,11 +487,11 @@ mod tests {
         let mut trick = Trick::new();
         // Our partner (North) leads the right bower and is winning; we are South.
         trick.push(Play {
-            seat: Seat::North,
+            seat: Seat::First,
             card: card(Rank::Jack, Suit::Spades),
         });
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::Nine, Suit::Hearts),
         });
         // We are void in trump's led suit; legal is our whole hand.
@@ -508,10 +501,10 @@ mod tests {
         ];
         let contract = Contract {
             trump,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: false,
         };
-        let view = play_view(&hand, &trick, Seat::South, contract);
+        let view = play_view(&hand, &trick, Seat::Third, contract);
         // Partner has it won, so we slough the nine, not the ace.
         assert_eq!(
             agent.play_card(&view, &hand),

@@ -7,7 +7,7 @@
 //! here as a collapsed win rate.
 
 use euchre_agents::{AdvancedAgent, HeuristicAgent, RandomAgent};
-use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
+use euchre_engine::{Driver, GameConfig, Player, Verbosity};
 use euchre_interface::Agent;
 
 /// Runs one match with the North/South team against the East/West team for a
@@ -17,7 +17,7 @@ fn play_match(
     seed: u64,
     mut ns: impl FnMut() -> Box<dyn Agent>,
     mut ew: impl FnMut() -> Box<dyn Agent>,
-) -> Team {
+) -> usize {
     let mut north = ns();
     let mut south = ns();
     let mut east = ew();
@@ -50,7 +50,7 @@ fn advanced_team_dominates_random_team() {
                 seed as u64,
                 || Box::new(AdvancedAgent::new()),
                 || Box::new(RandomAgent::with_seed(seed as u64 ^ 0xA1CE)),
-            ) == Team::NorthSouth
+            ) == 0
         })
         .count();
 
@@ -71,7 +71,7 @@ fn advanced_team_beats_the_heuristic_team() {
                 seed as u64,
                 || Box::new(AdvancedAgent::new()),
                 || Box::new(HeuristicAgent::new()),
-            ) == Team::NorthSouth
+            ) == 0
         })
         .count();
 
@@ -110,5 +110,5 @@ fn a_full_advanced_table_completes() {
     )
     .run()
     .expect("a headless match never fails on I/O");
-    assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+    assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
 }

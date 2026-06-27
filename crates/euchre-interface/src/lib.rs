@@ -23,16 +23,16 @@
 //! Implement [`Agent`] and supply a decision at each callback:
 //!
 //! ```
-//! use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Suit, UpcardBid};
+//! use euchre_interface::{Agent, CallBid, Card, GameView, UpcardBid};
 //!
 //! struct PassiveBot;
 //!
 //! impl Agent for PassiveBot {
-//!     fn bid_upcard(&mut self, _view: &GameView<'_>, _up_card: Card) -> UpcardBid {
+//!     fn bid_upcard(&mut self, _view: &GameView<'_>) -> UpcardBid {
 //!         UpcardBid::Pass
 //!     }
 //!
-//!     fn bid_call(&mut self, _view: &GameView<'_>, turned_down: Suit) -> CallBid {
+//!     fn bid_call(&mut self, _view: &GameView<'_>) -> CallBid {
 //!         // Forced to call on the last seat? Pick any legal suit; otherwise pass.
 //!         CallBid::Pass
 //!     }

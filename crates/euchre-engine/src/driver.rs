@@ -32,13 +32,11 @@
 
 use std::io::{self, BufRead, BufReader, Empty, Write};
 
-use euchre_interface::{
-    Agent, Bid, CallBid, Card, HandResult, Scores, Seat, Suit, Team, Trick, UpcardBid,
-};
+use euchre_interface::{Agent, CallBid, Card, HandResult, Seat, Suit, Trick, UpcardBid};
 use rand::SeedableRng;
 use rand::rngs::ChaCha12Rng;
 
-use crate::game::{Action, Decision, Game, GameConfig, seat_index};
+use crate::game::{Action, Decision, Game, GameConfig};
 
 /// How much the driver narrates a match to its output stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,10 +60,10 @@ pub enum Player<'a> {
 /// The result of running a match to completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcome {
-    /// The team that reached the target score.
-    pub winner: Team,
-    /// The final cumulative score.
-    pub scores: Scores,
+    /// The team that reached the target score (index 0 = North/South).
+    pub winner: usize,
+    /// The final cumulative score by team (index 0 = North/South).
+    pub scores: [u8; 2],
     /// How many hands were dealt, including any thrown in.
     pub hands_played: u32,
 }
@@ -200,7 +198,11 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
                     let decision = self.decide_discard(seat)?;
                     self.game.apply(decision).expect("legal discard");
                     if self.verbosity == Verbosity::Full {
-                        writeln!(self.output, "{} discards.", seat_name(seat))?;
+                        writeln!(
+                            self.output,
+                            "{} discards.",
+                            player_name(self.game.player_at(seat))
+                        )?;
                     }
                 }
                 Action::Play { seat, legal } => {
@@ -214,9 +216,9 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
                         .expect("agent returned a legal card");
                     self.narrate_play(seat, card, before)?;
                 }
-                Action::HandComplete { result, .. } => {
-                    self.notify_hand_end(&result);
-                    self.narrate_hand_result(&result)?;
+                Action::HandComplete { .. } => {
+                    self.notify_hand_end();
+                    self.narrate_hand_result()?;
                     if self.game.is_over() {
                         let winner = self.game.winner().expect("decided match has a winner");
                         self.narrate_game_over(winner)?;
@@ -245,10 +247,11 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
     // keep from borrowing all of `self` while the view is alive.
 
     fn decide_upcard(&mut self, seat: Seat, up_card: Card) -> io::Result<Decision> {
-        match &mut self.players[seat_index(seat)] {
+        let player = self.game.player_at(seat);
+        match &mut self.players[player] {
             Player::Bot(agent) => {
                 let view = self.game.view(seat);
-                Ok(Decision::Upcard(agent.bid_upcard(&view, up_card)))
+                Ok(Decision::Upcard(agent.bid_upcard(&view)))
             }
             Player::Human => {
                 prompt_upcard(&self.game, seat, up_card, &mut self.input, &mut self.output)
@@ -262,10 +265,11 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         turned_down: Suit,
         may_pass: bool,
     ) -> io::Result<Decision> {
-        match &mut self.players[seat_index(seat)] {
+        let player = self.game.player_at(seat);
+        match &mut self.players[player] {
             Player::Bot(agent) => {
                 let view = self.game.view(seat);
-                Ok(Decision::Call(agent.bid_call(&view, turned_down)))
+                Ok(Decision::Call(agent.bid_call(&view)))
             }
             Player::Human => prompt_call(
                 &self.game,
@@ -279,7 +283,8 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
     }
 
     fn decide_discard(&mut self, seat: Seat) -> io::Result<Decision> {
-        match &mut self.players[seat_index(seat)] {
+        let player = self.game.player_at(seat);
+        match &mut self.players[player] {
             Player::Bot(agent) => {
                 let view = self.game.view(seat);
                 Ok(Decision::Discard(agent.discard(&view)))
@@ -289,7 +294,8 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
     }
 
     fn decide_play(&mut self, seat: Seat, legal: &[Card]) -> io::Result<Decision> {
-        match &mut self.players[seat_index(seat)] {
+        let player = self.game.player_at(seat);
+        match &mut self.players[player] {
             Player::Bot(agent) => {
                 let view = self.game.view(seat);
                 Ok(Decision::Play(agent.play_card(&view, legal)))
@@ -300,12 +306,15 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         }
     }
 
-    /// Lets every agent observe the completed hand so stateful bots can learn.
-    fn notify_hand_end(&mut self, result: &HandResult) {
+    /// Lets every agent observe the completed hand, from its own seat's point of
+    /// view, so stateful bots can learn.
+    fn notify_hand_end(&mut self) {
         for seat in Seat::ALL {
-            if let Player::Bot(agent) = &mut self.players[seat_index(seat)] {
+            let player = self.game.player_at(seat);
+            if let Player::Bot(agent) = &mut self.players[player] {
                 let view = self.game.view(seat);
-                agent.observe_hand_end(&view, result);
+                let result = self.game.hand_result(seat);
+                agent.observe_hand_end(&view, &result);
             }
         }
     }
@@ -321,10 +330,10 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         writeln!(
             self.output,
             "--- New hand. Dealer: {}. Up card: {}. Score: N/S {}, E/W {}.",
-            seat_name(self.game.dealer()),
+            player_name(self.game.dealer()),
             self.game.up_card(),
-            s.north_south,
-            s.east_west,
+            s[0],
+            s[1],
         )
     }
 
@@ -332,25 +341,25 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         if self.verbosity != Verbosity::Full {
             return Ok(());
         }
+        let actor = player_name(self.game.player_at(seat));
         match bid {
-            UpcardBid::Pass => writeln!(self.output, "{} passes.", seat_name(seat))?,
-            UpcardBid::OrderUp(b) => {
+            UpcardBid::Pass => writeln!(self.output, "{actor} passes.")?,
+            UpcardBid::OrderUp { alone } => {
                 writeln!(
                     self.output,
                     "{} orders up the {}{}. {} is trump.",
-                    seat_name(seat),
+                    actor,
                     up_card,
-                    alone_suffix(b),
+                    alone_suffix(alone),
                     up_card.suit,
                 )?;
-                let dealer = self.game.dealer();
                 let dealer_sits_out =
-                    self.game.contract().and_then(|c| c.sitting_out()) == Some(dealer);
+                    self.game.contract().and_then(|c| c.sitting_out()) == Some(Seat::Dealer);
                 if !dealer_sits_out {
                     writeln!(
                         self.output,
                         "{} picks up the {}.",
-                        seat_name(dealer),
+                        player_name(self.game.dealer()),
                         up_card
                     )?;
                 }
@@ -363,14 +372,15 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         if self.verbosity != Verbosity::Full {
             return Ok(());
         }
+        let actor = player_name(self.game.player_at(seat));
         match bid {
-            CallBid::Pass => writeln!(self.output, "{} passes.", seat_name(seat))?,
-            CallBid::Call { suit, bid } => writeln!(
+            CallBid::Pass => writeln!(self.output, "{actor} passes.")?,
+            CallBid::Call { suit, alone } => writeln!(
                 self.output,
                 "{} names {} as trump{}.",
-                seat_name(seat),
+                actor,
                 suit,
-                alone_suffix(bid),
+                alone_suffix(alone),
             )?,
         }
         Ok(())
@@ -380,32 +390,68 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
         if self.verbosity != Verbosity::Full {
             return Ok(());
         }
-        writeln!(self.output, "  {} plays {}", seat_name(seat), card)?;
+        writeln!(
+            self.output,
+            "  {} plays {}",
+            player_name(self.game.player_at(seat)),
+            card
+        )?;
         let tricks = self.game.completed_tricks();
         if tricks.len() > tricks_before {
             let (_, winner) = tricks[tricks.len() - 1];
             writeln!(
                 self.output,
                 "  -> {} wins trick {}.",
-                seat_name(winner),
+                player_name(self.game.player_at(winner)),
                 tricks.len(),
             )?;
         }
         Ok(())
     }
 
-    fn narrate_hand_result(&mut self, result: &HandResult) -> io::Result<()> {
+    fn narrate_hand_result(&mut self) -> io::Result<()> {
         if self.verbosity == Verbosity::Silent {
             return Ok(());
         }
-        writeln!(
-            self.output,
-            "{}",
-            format_hand_result(result, self.game.scores())
-        )
+        writeln!(self.output, "{}", self.format_hand_result())
     }
 
-    fn narrate_game_over(&mut self, winner: Team) -> io::Result<()> {
+    /// One human-readable line summarizing the just-completed hand, framed by who
+    /// scored. Read from the god's-eye game state rather than any one seat's view.
+    fn format_hand_result(&self) -> String {
+        let s = self.game.scores();
+        let running = format!("[N/S {}, E/W {}]", s[0], s[1]);
+        // North's seat anchors the relative result to the North/South team.
+        let HandResult::Played(score) = self.game.hand_result(self.game.seat_of(0)) else {
+            return format!("Hand thrown in — no one scored. {running}");
+        };
+        let points = score.points_awarded.unsigned_abs();
+        let scoring_team = if score.points_awarded >= 0 { 0 } else { 1 };
+        let contract = self.game.contract().expect("a played hand has a contract");
+        let maker_team = self.game.player_at(contract.maker) % 2;
+        let detail = if score.euchred() {
+            format!(
+                "{} euchre {}",
+                team_name(scoring_team),
+                team_name(maker_team)
+            )
+        } else if score.march() {
+            if contract.alone {
+                format!("{} march alone", team_name(scoring_team))
+            } else {
+                format!("{} march", team_name(scoring_team))
+            }
+        } else {
+            format!(
+                "{} make it ({} tricks)",
+                team_name(scoring_team),
+                score.maker_tricks
+            )
+        };
+        format!("{detail}: +{points}. {running}")
+    }
+
+    fn narrate_game_over(&mut self, winner: usize) -> io::Result<()> {
         if self.verbosity == Verbosity::Silent {
             return Ok(());
         }
@@ -414,8 +460,8 @@ impl<'a, R: BufRead, W: Write> Driver<'a, R, W> {
             self.output,
             "{} wins the match! Final score: N/S {}, E/W {}.",
             team_name(winner),
-            s.north_south,
-            s.east_west,
+            s[0],
+            s[1],
         )
     }
 }
@@ -436,8 +482,8 @@ fn prompt_upcard<R: BufRead, W: Write>(
     if !ask_yes_no(input, output, &format!("Order up the {up_card}? [y/N]: "))? {
         return Ok(Decision::Upcard(UpcardBid::Pass));
     }
-    let bid = ask_alone(input, output)?;
-    Ok(Decision::Upcard(UpcardBid::OrderUp(bid)))
+    let alone = ask_alone(input, output)?;
+    Ok(Decision::Upcard(UpcardBid::OrderUp { alone }))
 }
 
 fn prompt_call<R: BufRead, W: Write>(
@@ -470,7 +516,7 @@ fn prompt_call<R: BufRead, W: Write>(
             } else {
                 CallBid::Call {
                     suit: choices[0],
-                    bid: Bid::WithPartner,
+                    alone: false,
                 }
             }));
         };
@@ -481,8 +527,8 @@ fn prompt_call<R: BufRead, W: Write>(
         if let Ok(idx) = lower.parse::<usize>()
             && let Some(&suit) = choices.get(idx)
         {
-            let bid = ask_alone(input, output)?;
-            return Ok(Decision::Call(CallBid::Call { suit, bid }));
+            let alone = ask_alone(input, output)?;
+            return Ok(Decision::Call(CallBid::Call { suit, alone }));
         }
         writeln!(output, "Invalid choice.")?;
     }
@@ -510,7 +556,7 @@ fn prompt_play<R: BufRead, W: Write>(
 ) -> io::Result<Decision> {
     let trick = game.current_trick();
     if !trick.is_empty() {
-        write_trick(output, trick)?;
+        write_trick(output, game, trick)?;
     }
     write_hand(output, "Your hand", game.hand(seat))?;
     writeln!(output, "Legal plays:")?;
@@ -520,12 +566,8 @@ fn prompt_play<R: BufRead, W: Write>(
 }
 
 /// Asks the maker whether to play alone.
-fn ask_alone<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> io::Result<Bid> {
-    Ok(if ask_yes_no(input, output, "Go alone? [y/N]: ")? {
-        Bid::Alone
-    } else {
-        Bid::WithPartner
-    })
+fn ask_alone<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> io::Result<bool> {
+    ask_yes_no(input, output, "Go alone? [y/N]: ")
 }
 
 /// Prompts for a yes/no answer, re-asking on garbage. End-of-input and a bare
@@ -592,65 +634,33 @@ fn write_numbered<W: Write>(output: &mut W, cards: &[Card]) -> io::Result<()> {
     Ok(())
 }
 
-fn write_trick<W: Write>(output: &mut W, trick: &Trick) -> io::Result<()> {
+fn write_trick<W: Write>(output: &mut W, game: &Game, trick: &Trick) -> io::Result<()> {
     write!(output, "Current trick:")?;
     for play in trick.plays() {
-        write!(output, " {}={}", seat_name(play.seat), play.card)?;
+        write!(
+            output,
+            " {}={}",
+            player_name(game.player_at(play.seat)),
+            play.card
+        )?;
     }
     writeln!(output)
 }
 
 // --- Formatting --------------------------------------------------------------
 
-/// One human-readable line summarizing a completed hand, framed by who scored.
-fn format_hand_result(result: &HandResult, scores: Scores) -> String {
-    let running = format!("[N/S {}, E/W {}]", scores.north_south, scores.east_west);
-    match result {
-        HandResult::PassedOut => format!("Hand thrown in — no one scored. {running}"),
-        HandResult::Played(score) => {
-            let (team, points) = score.points_awarded;
-            let detail = if score.euchred {
-                format!("{} euchre {}", team_name(team), team_name(score.makers))
-            } else if score.march {
-                if score.alone {
-                    format!("{} march alone", team_name(team))
-                } else {
-                    format!("{} march", team_name(team))
-                }
-            } else {
-                format!(
-                    "{} make it ({} tricks)",
-                    team_name(team),
-                    score.maker_tricks
-                )
-            };
-            format!("{detail}: +{points}. {running}")
-        }
-    }
+fn alone_suffix(alone: bool) -> &'static str {
+    if alone { " and goes alone" } else { "" }
 }
 
-fn alone_suffix(bid: Bid) -> &'static str {
-    if bid.is_alone() {
-        " and goes alone"
-    } else {
-        ""
-    }
+/// The name of a fixed player (`0` = North … `3` = West).
+fn player_name(player: usize) -> &'static str {
+    ["North", "East", "South", "West"][player]
 }
 
-fn seat_name(seat: Seat) -> &'static str {
-    match seat {
-        Seat::North => "North",
-        Seat::East => "East",
-        Seat::South => "South",
-        Seat::West => "West",
-    }
-}
-
-fn team_name(team: Team) -> &'static str {
-    match team {
-        Team::NorthSouth => "North/South",
-        Team::EastWest => "East/West",
-    }
+/// The name of a fixed team (`0` = North/South, `1` = East/West).
+fn team_name(team: usize) -> &'static str {
+    ["North/South", "East/West"][team]
 }
 
 // --- Shuffling ---------------------------------------------------------------
@@ -674,16 +684,14 @@ mod tests {
     struct FirstLegal;
 
     impl Agent for FirstLegal {
-        fn bid_upcard(&mut self, _view: &GameView<'_>, _up_card: Card) -> UpcardBid {
+        fn bid_upcard(&mut self, _view: &GameView<'_>) -> UpcardBid {
             UpcardBid::Pass
         }
 
-        fn bid_call(&mut self, _view: &GameView<'_>, turned_down: Suit) -> CallBid {
+        fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+            let turned_down = view.up_card.suit;
             let suit = Suit::ALL.into_iter().find(|&s| s != turned_down).unwrap();
-            CallBid::Call {
-                suit,
-                bid: Bid::WithPartner,
-            }
+            CallBid::Call { suit, alone: false }
         }
 
         fn discard(&mut self, view: &GameView<'_>) -> Card {
@@ -721,7 +729,7 @@ mod tests {
         .unwrap();
 
         assert!(out.is_empty(), "silent mode prints nothing");
-        assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+        assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
         assert!(outcome.hands_played >= 1);
     }
 
@@ -794,7 +802,7 @@ mod tests {
         )
         .run()
         .unwrap();
-        assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+        assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
     }
 
     #[test]

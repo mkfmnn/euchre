@@ -7,16 +7,18 @@
 //! hidden-information rule (a discard reveals no card) has exactly one home.
 
 use euchre_engine::{Action, Decision, Game};
-use euchre_interface::{Bid, CallBid, Seat, UpcardBid};
+use euchre_interface::{CallBid, UpcardBid};
 
-use crate::protocol::{ClientMsg, PlayerView, PublicAction, TurnHint};
+use crate::protocol::{ClientMsg, Player, PlayerView, PublicAction, TurnHint};
 
-/// Builds the owned [`PlayerView`] snapshot for `seat` from the live game.
-pub fn snapshot(game: &Game, seat: Seat) -> PlayerView {
+/// Builds the owned [`PlayerView`] snapshot for the fixed `player` from the live
+/// game.
+pub fn snapshot(game: &Game, player: Player) -> PlayerView {
+    let seat = game.seat_of(player as usize);
     let v = game.view(seat);
     PlayerView {
-        seat: v.seat,
-        dealer: v.dealer,
+        seat: player,
+        dealer: game.dealer() as Player,
         hand: v.hand.to_vec(),
         contract: v.contract,
         current_trick: v.current_trick.clone(),
@@ -58,7 +60,7 @@ pub fn decision_from(msg: &ClientMsg, action: &Action) -> Result<Decision, Strin
         Action::BidUpcard { .. } => match msg {
             ClientMsg::Pass => Ok(Decision::Upcard(UpcardBid::Pass)),
             ClientMsg::Bid { alone, .. } => {
-                Ok(Decision::Upcard(UpcardBid::OrderUp(bid_of(*alone))))
+                Ok(Decision::Upcard(UpcardBid::OrderUp { alone: *alone }))
             }
             _ => Err("expected BID or PASS".into()),
         },
@@ -66,7 +68,7 @@ pub fn decision_from(msg: &ClientMsg, action: &Action) -> Result<Decision, Strin
             ClientMsg::Pass => Ok(Decision::Call(CallBid::Pass)),
             ClientMsg::Bid { suit, alone } => Ok(Decision::Call(CallBid::Call {
                 suit: *suit,
-                bid: bid_of(*alone),
+                alone: *alone,
             })),
             _ => Err("expected BID or PASS".into()),
         },
@@ -89,25 +91,21 @@ pub fn decision_from(msg: &ClientMsg, action: &Action) -> Result<Decision, Strin
 pub fn public_action(action: &Action, decision: &Decision) -> PublicAction {
     match decision {
         Decision::Upcard(UpcardBid::Pass) | Decision::Call(CallBid::Pass) => PublicAction::Pass,
-        Decision::Upcard(UpcardBid::OrderUp(bid)) => {
+        Decision::Upcard(UpcardBid::OrderUp { alone }) => {
             let suit = match action {
                 Action::BidUpcard { up_card, .. } => up_card.suit,
                 _ => unreachable!("order-up answers a BidUpcard action"),
             };
             PublicAction::Bid {
                 suit,
-                alone: bid.is_alone(),
+                alone: *alone,
             }
         }
-        Decision::Call(CallBid::Call { suit, bid }) => PublicAction::Bid {
+        Decision::Call(CallBid::Call { suit, alone }) => PublicAction::Bid {
             suit: *suit,
-            alone: bid.is_alone(),
+            alone: *alone,
         },
         Decision::Discard(_) => PublicAction::Discard,
         Decision::Play(card) => PublicAction::Play { card: *card },
     }
-}
-
-fn bid_of(alone: bool) -> Bid {
-    if alone { Bid::Alone } else { Bid::WithPartner }
 }

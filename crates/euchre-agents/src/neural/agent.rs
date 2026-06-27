@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use euchre_interface::{Agent, CallBid, Card, GameView, Suit, UpcardBid};
+use euchre_interface::{Agent, CallBid, Card, GameView, Seat, UpcardBid};
 
 use super::features::{self, Head};
 use super::train::NeuralModel;
@@ -66,15 +66,16 @@ impl Default for NeuralAgent {
 }
 
 impl Agent for NeuralAgent {
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid {
-        let feats = features::upcard_features(view, up_card);
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid {
+        let feats = features::upcard_features(view);
         let logits = self.model.net(Head::Upcard).forward(&feats);
         let class = argmax_legal(&logits, features::upcard_legal());
         features::upcard_action(class)
     }
 
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
-        let stuck = view.rules.stick_the_dealer && view.seat == view.dealer;
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+        let turned_down = view.up_card.suit;
+        let stuck = view.rules.stick_the_dealer && view.seat == Seat::Dealer;
         let feats = features::call_features(view, turned_down, stuck);
         let logits = self.model.net(Head::Call).forward(&feats);
         let class = argmax_legal(&logits, features::call_legal(stuck));

@@ -15,7 +15,8 @@
 //!
 //! If a seat orders up the turned card, the dealer takes it into hand and
 //! [discards](Agent::discard) one card. The seat that fixes trump (in either
-//! round) may choose to play [alone](Bid::alone).
+//! round) may choose to play *alone* (its `alone` flag), sitting its partner out
+//! for a chance at a larger bonus.
 //!
 //! ## Play
 //!
@@ -127,6 +128,19 @@ pub struct HandScore {
     pub points_awarded: i8,
 }
 
+impl HandScore {
+    /// Whether the makers were *euchred* — they failed to win at least three of
+    /// the five tricks, so the defenders scored.
+    pub const fn euchred(self) -> bool {
+        self.maker_tricks < 3
+    }
+
+    /// Whether the makers swept all five tricks (a *march*).
+    pub const fn march(self) -> bool {
+        self.maker_tricks == 5
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,17 +151,15 @@ mod tests {
     struct FirstLegalAgent;
 
     impl Agent for FirstLegalAgent {
-        fn bid_upcard(&mut self, _view: &GameView<'_>, _up_card: Card) -> UpcardBid {
+        fn bid_upcard(&mut self, _view: &GameView<'_>) -> UpcardBid {
             UpcardBid::Pass
         }
 
-        fn bid_call(&mut self, _view: &GameView<'_>, turned_down: Suit) -> CallBid {
-            // Name the first suit that is not the turned-down one.
+        fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+            // Name the first suit that is not the turned-down up-card's suit.
+            let turned_down = view.up_card.suit;
             let suit = Suit::ALL.into_iter().find(|&s| s != turned_down).unwrap();
-            CallBid::Call {
-                suit,
-                bid: Bid::WithPartner,
-            }
+            CallBid::Call { suit, alone: false }
         }
 
         fn discard(&mut self, view: &GameView<'_>) -> Card {
@@ -159,12 +171,13 @@ mod tests {
         }
     }
 
-    fn empty_view<'a>(hand: &'a [Card], trick: &'a Trick) -> GameView<'a> {
+    fn view_with_upcard<'a>(hand: &'a [Card], trick: &'a Trick, up_card: Card) -> GameView<'a> {
         GameView {
-            seat: Seat::North,
-            dealer: Seat::North,
+            seat: Seat::First,
+            up_card,
             hand,
             contract: None,
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -177,9 +190,9 @@ mod tests {
         let mut agent: Box<dyn Agent> = Box::new(FirstLegalAgent);
         let trick = Trick::new();
         let hand = [Card::new(Rank::Ace, Suit::Hearts)];
-        let view = empty_view(&hand, &trick);
         let up = Card::new(Rank::Nine, Suit::Spades);
-        assert_eq!(agent.bid_upcard(&view, up), UpcardBid::Pass);
+        let view = view_with_upcard(&hand, &trick, up);
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::Pass);
         assert_eq!(agent.play_card(&view, &hand), hand[0]);
     }
 
@@ -188,8 +201,9 @@ mod tests {
         let mut agent = FirstLegalAgent;
         let trick = Trick::new();
         let hand = [Card::new(Rank::Ace, Suit::Hearts)];
-        let view = empty_view(&hand, &trick);
-        match agent.bid_call(&view, Suit::Clubs) {
+        // Clubs is the up-card suit, so it must not be the named suit.
+        let view = view_with_upcard(&hand, &trick, Card::new(Rank::Nine, Suit::Clubs));
+        match agent.bid_call(&view) {
             CallBid::Call { suit, .. } => assert_ne!(suit, Suit::Clubs),
             CallBid::Pass => panic!("expected a call"),
         }

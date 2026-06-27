@@ -13,7 +13,7 @@
 //! [`Card::trump_strength`] and [`Card::effective_suit`], so the bower rules stay
 //! consistent with the engine's.
 
-use euchre_interface::{Card, GameView, Rank, Seat, Suit, Team};
+use euchre_interface::{Card, GameView, Rank, Seat, Suit};
 
 /// A placeholder for the unused slots of the in-progress trick; never read beyond
 /// `trick_len`.
@@ -35,8 +35,9 @@ pub(crate) struct DdState {
     /// Only the first `trick_len` entries are meaningful.
     trick: [(Seat, Card); 4],
     trick_len: usize,
-    /// The team that named trump, whose taken tricks the search drives up.
-    maker_team: Team,
+    /// The (relative) team that named trump, whose taken tricks the search drives
+    /// up. `0` = First/Third, `1` = Second/Dealer; see [`team_index`].
+    maker_team: usize,
     /// Tricks the making team has taken so far.
     maker_tricks: u8,
     /// Total cards still to be played across all hands; zero ends the hand.
@@ -58,7 +59,7 @@ impl DdState {
         trump: Suit,
     ) -> DdState {
         let contract = view.contract.expect("a hand in play has a contract");
-        let maker_team = contract.maker.team();
+        let maker_team = team_index(contract.maker);
 
         let mut hands = [0u32; 4];
         let mut cards_left = 0u8;
@@ -72,12 +73,12 @@ impl DdState {
 
         let mut maker_tricks = 0u8;
         for (_trick, winner) in view.completed_tricks {
-            if winner.team() == maker_team {
+            if team_index(*winner) == maker_team {
                 maker_tricks += 1;
             }
         }
 
-        let mut trick = [(Seat::North, FILLER); 4];
+        let mut trick = [(Seat::First, FILLER); 4];
         let mut trick_len = 0;
         for play in view.current_trick.plays() {
             trick[trick_len] = (play.seat, play.card);
@@ -105,7 +106,7 @@ impl DdState {
         hands: &[Vec<Card>; 4],
         trump: Suit,
         sitting_out: Option<Seat>,
-        maker_team: Team,
+        maker_team: usize,
         leader: Seat,
     ) -> DdState {
         let mut masks = [0u32; 4];
@@ -122,7 +123,7 @@ impl DdState {
             trump,
             sitting_out,
             turn: leader,
-            trick: [(Seat::North, FILLER); 4],
+            trick: [(Seat::First, FILLER); 4],
             trick_len: 0,
             maker_team,
             maker_tricks: 0,
@@ -167,7 +168,7 @@ impl DdState {
                     winner = s.trick[i].0;
                 }
             }
-            if winner.team() == s.maker_team {
+            if team_index(winner) == s.maker_team {
                 s.maker_tricks += 1;
             }
             s.trick_len = 0;
@@ -240,7 +241,7 @@ fn solve_ab(state: &DdState, mut alpha: u8, mut beta: u8) -> u8 {
         return state.maker_tricks;
     }
 
-    if state.turn.team() == state.maker_team {
+    if team_index(state.turn) == state.maker_team {
         let mut value = 0;
         for &card in &buf[..n] {
             value = value.max(solve_ab(&state.play(card), alpha, beta));
@@ -277,11 +278,16 @@ fn card_from_index(idx: usize) -> Card {
 /// Maps a seat to a stable `0..4` index matching [`Seat::ALL`].
 pub(crate) fn seat_index(seat: Seat) -> usize {
     match seat {
-        Seat::North => 0,
-        Seat::East => 1,
-        Seat::South => 2,
-        Seat::West => 3,
+        Seat::First => 0,
+        Seat::Second => 1,
+        Seat::Third => 2,
+        Seat::Dealer => 3,
     }
+}
+
+/// The relative team a seat belongs to (`0` = First/Third, `1` = Second/Dealer).
+pub(crate) fn team_index(seat: Seat) -> usize {
+    seat_index(seat) % 2
 }
 
 /// Maps a suit to a stable `0..4` index matching [`Suit::ALL`].
@@ -309,7 +315,7 @@ mod tests {
         trump: Suit,
         sitting_out: Option<Seat>,
         turn: Seat,
-        maker_team: Team,
+        maker_team: usize,
     ) -> DdState {
         DdState::new_play(&hands, trump, sitting_out, maker_team, turn)
     }
@@ -333,7 +339,7 @@ mod tests {
             vec![card(Rank::Ace, Suit::Diamonds)],
             vec![card(Rank::Ace, Suit::Clubs)],
         ];
-        let st = state(hands, Suit::Spades, None, Seat::North, Team::NorthSouth);
+        let st = state(hands, Suit::Spades, None, Seat::First, 0);
         assert_eq!(solve(&st), 1);
     }
 
@@ -348,7 +354,7 @@ mod tests {
             vec![card(Rank::Nine, Suit::Diamonds)],
             vec![card(Rank::Nine, Suit::Clubs)],
         ];
-        let st = state(hands, Suit::Hearts, None, Seat::North, Team::EastWest);
+        let st = state(hands, Suit::Hearts, None, Seat::First, 1);
         assert_eq!(solve(&st), 1);
     }
 
@@ -387,8 +393,8 @@ mod tests {
             [north, east, south, west],
             Suit::Spades,
             None,
-            Seat::North,
-            Team::NorthSouth,
+            Seat::First,
+            0,
         );
         assert_eq!(solve(&st), 5);
     }
@@ -421,9 +427,9 @@ mod tests {
         let st = state(
             [north, east, vec![], west],
             Suit::Spades,
-            Some(Seat::South),
-            Seat::North,
-            Team::NorthSouth,
+            Some(Seat::Third),
+            Seat::First,
+            0,
         );
         assert_eq!(solve(&st), 5);
     }
@@ -444,13 +450,13 @@ mod tests {
             ],
             Suit::Spades,
             None,
-            Seat::North,
-            Team::NorthSouth,
+            Seat::First,
+            0,
         );
         // Seed a heart lead by North and put East on turn.
-        st.trick[0] = (Seat::North, card(Rank::Ace, Suit::Hearts));
+        st.trick[0] = (Seat::First, card(Rank::Ace, Suit::Hearts));
         st.trick_len = 1;
-        st.turn = Seat::East;
+        st.turn = Seat::Second;
         let mut buf = [FILLER; 6];
         let n = st.legal_moves(&mut buf);
         assert_eq!(n, 1);
@@ -474,7 +480,7 @@ mod tests {
                 card(Rank::Queen, Suit::Clubs),
             ],
         ];
-        let st = state(hands, Suit::Spades, None, Seat::North, Team::NorthSouth);
+        let st = state(hands, Suit::Spades, None, Seat::First, 0);
         assert_eq!(solve(&st), solve(&st));
     }
 
@@ -489,12 +495,10 @@ mod tests {
             vec![card(Rank::Nine, Suit::Diamonds)], // West
         ];
         // North leads hearts → the heart ace wins for the makers.
-        let north_leads =
-            DdState::new_play(&hands, Suit::Spades, None, Team::NorthSouth, Seat::North);
+        let north_leads = DdState::new_play(&hands, Suit::Spades, None, 0, Seat::First);
         assert_eq!(solve(&north_leads), 1);
         // East leads diamonds → the diamond ace wins for the defenders.
-        let east_leads =
-            DdState::new_play(&hands, Suit::Spades, None, Team::NorthSouth, Seat::East);
+        let east_leads = DdState::new_play(&hands, Suit::Spades, None, 0, Seat::Second);
         assert_eq!(solve(&east_leads), 0);
     }
 }

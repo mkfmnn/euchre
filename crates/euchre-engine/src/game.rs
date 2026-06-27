@@ -30,13 +30,28 @@ use std::fmt;
 
 use euchre_interface::{
     CallBid, Card, Contract, GameRules, GameView, HandResult, HandScore, Play, Scores, Seat, Suit,
-    Team, Trick, UpcardBid,
+    Trick, UpcardBid,
 };
 
 /// The number of cards dealt to each seat.
 const HAND_SIZE: usize = 5;
 /// The number of tricks played in a hand.
 const TRICKS_PER_HAND: usize = 5;
+
+/// A fixed player identity, independent of the rotating deal: `0` = North,
+/// `1` = East, `2` = South, `3` = West. Used to index the per-player arrays
+/// (hands) so a player keeps the same slot from hand to hand even as the
+/// dealer-relative [`Seat`] it occupies changes.
+type Player = usize;
+
+/// A fixed team identity: `0` = North/South (players 0 and 2), `1` = East/West
+/// (players 1 and 3). Used to index the per-team score array.
+type TeamId = usize;
+
+/// The team a fixed player belongs to (`player % 2`: 0/2 → 0, 1/3 → 1).
+fn team_of_player(player: Player) -> TeamId {
+    player % 2
+}
 
 /// The fixed setup for a match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +62,9 @@ pub struct GameConfig {
     /// The score a team must reach (or exceed) to win the match. Conventionally
     /// 10; some play to 5.
     pub target_score: u8,
-    /// The seat that deals the very first hand. The deal rotates clockwise each
-    /// subsequent hand.
-    pub first_dealer: Seat,
+    /// The fixed player who deals the very first hand (`0` = North, `1` = East,
+    /// `2` = South, `3` = West). The deal rotates clockwise each subsequent hand.
+    pub first_dealer: Player,
 }
 
 impl Default for GameConfig {
@@ -57,7 +72,7 @@ impl Default for GameConfig {
         GameConfig {
             rules: GameRules::default(),
             target_score: 10,
-            first_dealer: Seat::North,
+            first_dealer: 0,
         }
     }
 }
@@ -106,10 +121,11 @@ pub enum Action {
     /// `seat` must play one of `legal` into the current trick. Answered with
     /// [`Decision::Play`].
     Play { seat: Seat, legal: Vec<Card> },
-    /// The hand has ended. `result` describes the outcome and `dealer` is the
-    /// seat that dealt it. The caller should consult [`Game::is_over`] to decide
-    /// between stopping and dealing the next hand.
-    HandComplete { result: HandResult, dealer: Seat },
+    /// The hand has ended. `dealer` is the fixed player who dealt it. The caller
+    /// should consult [`Game::is_over`] to decide between stopping and dealing
+    /// the next hand, and may fetch each seat's view of the scoring with
+    /// [`Game::hand_result`].
+    HandComplete { dealer: Player },
 }
 
 /// A player's answer to an [`Action`], submitted via [`Game::apply`].
@@ -171,21 +187,44 @@ impl std::error::Error for ApplyError {}
 pub struct Game {
     rules: GameRules,
     target_score: u8,
-    scores: Scores,
-    dealer: Seat,
+    /// Absolute team scores, indexed by [`TeamId`] (team 0 = North/South).
+    scores: [u8; 2],
+    /// The fixed player dealing the current hand.
+    dealer: Player,
 
     // Per-hand state, reset by `deal`.
+    /// Each fixed player's hand, indexed by [`Player`].
     hands: [Vec<Card>; 4],
     up_card: Card,
     kitty: Vec<Card>,
+    /// The card the dealer buried after taking the up-card, remembered so the
+    /// dealer's own view can show it.
+    discarded: Option<Card>,
     contract: Option<Contract>,
     current_trick: Trick,
     completed_tricks: Vec<(Trick, Seat)>,
+    /// Tricks taken so far this hand, indexed by [`TeamId`].
     team_tricks: [u8; 2],
     phase: Phase,
-    last_result: Option<HandResult>,
+    last_result: Option<HandRecord>,
 
-    winner: Option<Team>,
+    /// The winning team, once decided.
+    winner: Option<TeamId>,
+}
+
+/// The engine's absolute record of how a hand was scored, kept so a per-seat
+/// [`HandResult`] can be built for any viewpoint (see [`Game::hand_result`]).
+#[derive(Debug, Clone, Copy)]
+enum HandRecord {
+    /// Every seat passed; no points were awarded.
+    PassedOut,
+    /// Trump was named and the hand played out.
+    Played {
+        maker_tricks: u8,
+        /// The fixed team that scored.
+        scoring_team: TeamId,
+        points: u8,
+    },
 }
 
 impl Game {
@@ -199,18 +238,17 @@ impl Game {
         let mut game = Game {
             rules: config.rules,
             target_score: config.target_score,
-            scores: Scores::default(),
-            dealer: config.first_dealer,
+            scores: [0, 0],
+            dealer: config.first_dealer % 4,
             hands: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             up_card: deck[HAND_SIZE * 4],
             kitty: Vec::new(),
+            discarded: None,
             contract: None,
             current_trick: Trick::new(),
             completed_tricks: Vec::new(),
             team_tricks: [0, 0],
-            phase: Phase::BidRound1 {
-                turn: config.first_dealer.next(),
-            },
+            phase: Phase::BidRound1 { turn: Seat::First },
             last_result: None,
             winner: None,
         };
@@ -229,7 +267,7 @@ impl Game {
         if self.phase != Phase::HandComplete {
             return Err(ApplyError::WrongPhase);
         }
-        self.dealer = self.dealer.next();
+        self.dealer = (self.dealer + 1) % 4;
         self.deal(deck);
         Ok(())
     }
@@ -249,14 +287,13 @@ impl Game {
         }
         self.up_card = deck[HAND_SIZE * 4];
         self.kitty = deck[HAND_SIZE * 4 + 1..].to_vec();
+        self.discarded = None;
         self.contract = None;
         self.current_trick = Trick::new();
         self.completed_tricks = Vec::with_capacity(TRICKS_PER_HAND);
         self.team_tricks = [0, 0];
         self.last_result = None;
-        self.phase = Phase::BidRound1 {
-            turn: self.dealer.next(),
-        };
+        self.phase = Phase::BidRound1 { turn: Seat::First };
     }
 
     /// Reports what the engine needs next in order to advance.
@@ -272,10 +309,10 @@ impl Game {
             Phase::BidRound2 { turn } => Action::BidCall {
                 seat: turn,
                 turned_down: self.up_card.suit,
-                may_pass: !(self.rules.stick_the_dealer && turn == self.dealer),
+                may_pass: !(self.rules.stick_the_dealer && turn == Seat::Dealer),
             },
             Phase::Discard => Action::Discard {
-                seat: self.dealer,
+                seat: Seat::Dealer,
                 up_card: self.up_card,
             },
             Phase::Play { turn } => Action::Play {
@@ -283,7 +320,6 @@ impl Game {
                 legal: self.legal_plays(turn),
             },
             Phase::HandComplete => Action::HandComplete {
-                result: self.last_result.expect("result set when hand completes"),
                 dealer: self.dealer,
             },
         }
@@ -307,28 +343,75 @@ impl Game {
     /// Builds the read-only [`GameView`] that `seat` is entitled to see right
     /// now: its own hand plus all public state.
     pub fn view(&self, seat: Seat) -> GameView<'_> {
+        let team = self.team_of(seat);
         GameView {
             seat,
-            dealer: self.dealer,
-            hand: &self.hands[seat_index(seat)],
+            up_card: self.up_card,
+            hand: &self.hands[self.player_at(seat)],
             contract: self.contract,
+            // The buried card is private to the dealer who chose it.
+            discarded: if seat == Seat::Dealer {
+                self.discarded
+            } else {
+                None
+            },
             current_trick: &self.current_trick,
             completed_tricks: &self.completed_tricks,
-            scores: self.scores,
+            scores: Scores {
+                us: self.scores[team],
+                them: self.scores[1 - team],
+            },
             rules: self.rules,
         }
     }
 
     // --- Accessors -----------------------------------------------------------
 
-    /// The seat that dealt the current hand.
-    pub fn dealer(&self) -> Seat {
+    /// The fixed player who dealt the current hand (`0` = North … `3` = West).
+    pub fn dealer(&self) -> Player {
         self.dealer
     }
 
-    /// The cumulative match score.
-    pub fn scores(&self) -> Scores {
+    /// The cumulative match score by fixed team (index 0 = North/South).
+    pub fn scores(&self) -> [u8; 2] {
         self.scores
+    }
+
+    /// The fixed player occupying `seat` this hand. `Seat::Dealer` is the
+    /// [dealer](Game::dealer); the others follow clockwise from the dealer's
+    /// left.
+    pub fn player_at(&self, seat: Seat) -> Player {
+        (self.dealer + seat_offset(seat)) % 4
+    }
+
+    /// The dealer-relative seat a fixed `player` occupies this hand — the inverse
+    /// of [`Game::player_at`].
+    pub fn seat_of(&self, player: Player) -> Seat {
+        seat_from_offset((player + 4 - self.dealer) % 4)
+    }
+
+    /// How the just-completed hand scored, told from `seat`'s point of view (its
+    /// team's net points). Valid once the engine reports
+    /// [`Action::HandComplete`].
+    pub fn hand_result(&self, seat: Seat) -> HandResult {
+        match self.last_result.expect("a completed hand has a result") {
+            HandRecord::PassedOut => HandResult::PassedOut,
+            HandRecord::Played {
+                maker_tricks,
+                scoring_team,
+                points,
+            } => {
+                let signed = if scoring_team == self.team_of(seat) {
+                    points as i8
+                } else {
+                    -(points as i8)
+                };
+                HandResult::Played(HandScore {
+                    maker_tricks,
+                    points_awarded: signed,
+                })
+            }
+        }
     }
 
     /// The contract for the current hand, once trump has been named.
@@ -364,7 +447,7 @@ impl Game {
 
     /// The cards currently held by `seat`.
     pub fn hand(&self, seat: Seat) -> &[Card] {
-        &self.hands[seat_index(seat)]
+        &self.hands[self.player_at(seat)]
     }
 
     /// Whether the match has been decided.
@@ -372,8 +455,9 @@ impl Game {
         self.winner.is_some()
     }
 
-    /// The winning team, once the match is [over](Game::is_over).
-    pub fn winner(&self) -> Option<Team> {
+    /// The winning team (index 0 = North/South), once the match is
+    /// [over](Game::is_over).
+    pub fn winner(&self) -> Option<TeamId> {
         self.winner
     }
 
@@ -382,21 +466,19 @@ impl Game {
     fn apply_upcard(&mut self, turn: Seat, bid: UpcardBid) -> Result<(), ApplyError> {
         match bid {
             UpcardBid::Pass => {
-                self.phase = if turn == self.dealer {
+                self.phase = if turn == Seat::Dealer {
                     // Everyone passed the up-card; turn it down and open round two.
-                    Phase::BidRound2 {
-                        turn: self.dealer.next(),
-                    }
+                    Phase::BidRound2 { turn: Seat::First }
                 } else {
                     Phase::BidRound1 { turn: turn.next() }
                 };
                 Ok(())
             }
-            UpcardBid::OrderUp(bid) => {
+            UpcardBid::OrderUp { alone } => {
                 self.contract = Some(Contract {
                     trump: self.up_card.suit,
                     maker: turn,
-                    alone: bid.is_alone(),
+                    alone,
                 });
                 self.begin_after_order_up();
                 Ok(())
@@ -408,10 +490,10 @@ impl Game {
     /// discard — unless the dealer is sitting out a loner, in which case the
     /// pickup is moot and we go straight to the play.
     fn begin_after_order_up(&mut self) {
-        if self.sitting_out() == Some(self.dealer) {
+        if self.sitting_out() == Some(Seat::Dealer) {
             self.start_play();
         } else {
-            self.hands[seat_index(self.dealer)].push(self.up_card);
+            self.hands[self.dealer].push(self.up_card);
             self.phase = Phase::Discard;
         }
     }
@@ -419,26 +501,26 @@ impl Game {
     fn apply_call(&mut self, turn: Seat, bid: CallBid) -> Result<(), ApplyError> {
         match bid {
             CallBid::Pass => {
-                if turn == self.dealer {
+                if turn == Seat::Dealer {
                     if self.rules.stick_the_dealer {
                         return Err(ApplyError::MustNotPass);
                     }
                     // Every seat passed both rounds: throw the hand in.
-                    self.last_result = Some(HandResult::PassedOut);
+                    self.last_result = Some(HandRecord::PassedOut);
                     self.phase = Phase::HandComplete;
                 } else {
                     self.phase = Phase::BidRound2 { turn: turn.next() };
                 }
                 Ok(())
             }
-            CallBid::Call { suit, bid } => {
+            CallBid::Call { suit, alone } => {
                 if suit == self.up_card.suit {
                     return Err(ApplyError::IllegalCall(suit));
                 }
                 self.contract = Some(Contract {
                     trump: suit,
                     maker: turn,
-                    alone: bid.is_alone(),
+                    alone,
                 });
                 self.start_play();
                 Ok(())
@@ -447,12 +529,13 @@ impl Game {
     }
 
     fn apply_discard(&mut self, card: Card) -> Result<(), ApplyError> {
-        let hand = &mut self.hands[seat_index(self.dealer)];
+        let hand = &mut self.hands[self.dealer];
         let pos = hand
             .iter()
             .position(|&c| c == card)
             .ok_or(ApplyError::NotInHand(card))?;
         let discarded = hand.remove(pos);
+        self.discarded = Some(discarded);
         self.kitty.push(discarded);
         self.start_play();
         Ok(())
@@ -469,7 +552,7 @@ impl Game {
     /// The first seat to lead: the dealer's left, skipping a seat that is
     /// sitting out because its partner went alone.
     fn first_leader(&self) -> Seat {
-        let candidate = self.dealer.next();
+        let candidate = Seat::First;
         if self.sitting_out() == Some(candidate) {
             candidate.next()
         } else {
@@ -478,14 +561,14 @@ impl Game {
     }
 
     fn apply_play(&mut self, turn: Seat, card: Card) -> Result<(), ApplyError> {
-        if !self.hands[seat_index(turn)].contains(&card) {
+        if !self.hands[self.player_at(turn)].contains(&card) {
             return Err(ApplyError::NotInHand(card));
         }
         if !self.legal_plays(turn).contains(&card) {
             return Err(ApplyError::MustFollowSuit(card));
         }
 
-        let hand = &mut self.hands[seat_index(turn)];
+        let hand = &mut self.hands[self.player_at(turn)];
         let pos = hand.iter().position(|&c| c == card).expect("card is held");
         hand.remove(pos);
         self.current_trick.push(Play { seat: turn, card });
@@ -504,7 +587,7 @@ impl Game {
     /// the led suit if it holds any, otherwise its whole hand.
     fn legal_plays(&self, seat: Seat) -> Vec<Card> {
         let trump = self.contract.expect("contract set during play").trump;
-        let hand = &self.hands[seat_index(seat)];
+        let hand = &self.hands[self.player_at(seat)];
         match self.current_trick.led_suit(trump) {
             None => hand.clone(),
             Some(led) => {
@@ -528,7 +611,7 @@ impl Game {
             .current_trick
             .winner(trump)
             .expect("a completed trick has a winner");
-        self.team_tricks[team_index(winner.team())] += 1;
+        self.team_tricks[self.team_of(winner)] += 1;
         let finished = std::mem::replace(&mut self.current_trick, Trick::new());
         self.completed_tricks.push((finished, winner));
 
@@ -542,41 +625,40 @@ impl Game {
 
     fn score_hand(&mut self) {
         let contract = self.contract.expect("a played hand has a contract");
-        let makers = contract.maker.team();
-        let maker_tricks = self.team_tricks[team_index(makers)];
+        let makers = self.team_of(contract.maker);
+        let maker_tricks = self.team_tricks[makers];
         let alone = contract.alone;
         let euchred = maker_tricks < 3;
         let march = maker_tricks == TRICKS_PER_HAND as u8;
 
         let (team, points) = if euchred {
-            (makers.opponent(), 2)
+            (1 - makers, 2)
         } else if march {
             (makers, if alone { 4 } else { 2 })
         } else {
             (makers, 1)
         };
 
-        match team {
-            Team::NorthSouth => self.scores.north_south += points,
-            Team::EastWest => self.scores.east_west += points,
-        }
+        self.scores[team] += points;
 
-        self.last_result = Some(HandResult::Played(HandScore {
-            makers,
+        self.last_result = Some(HandRecord::Played {
             maker_tricks,
-            euchred,
-            march,
-            alone,
-            points_awarded: (team, points),
-        }));
+            scoring_team: team,
+            points,
+        });
 
-        if self.scores.for_team(team) >= self.target_score {
+        if self.scores[team] >= self.target_score {
             self.winner = Some(team);
         }
         self.phase = Phase::HandComplete;
     }
 
     // --- Seat helpers --------------------------------------------------------
+
+    /// The fixed team [`seat`](Seat) belongs to this hand (index 0 = North/South).
+    fn team_of(&self, seat: Seat) -> TeamId {
+        team_of_player(self.player_at(seat))
+    }
 
     /// The seat sitting out the current hand, if a loner was declared.
     fn sitting_out(&self) -> Option<Seat> {
@@ -599,21 +681,25 @@ impl Game {
     }
 }
 
-/// Maps a seat to its index into the per-seat arrays, matching [`Seat::ALL`].
-pub(crate) fn seat_index(seat: Seat) -> usize {
+/// The number of clockwise steps from the dealer to `seat`: the dealer's left
+/// (`First`) is 1, around to the dealer itself (`Dealer`) at 0.
+fn seat_offset(seat: Seat) -> usize {
     match seat {
-        Seat::North => 0,
-        Seat::East => 1,
-        Seat::South => 2,
-        Seat::West => 3,
+        Seat::First => 1,
+        Seat::Second => 2,
+        Seat::Third => 3,
+        Seat::Dealer => 0,
     }
 }
 
-/// Maps a team to its index into the per-team arrays.
-fn team_index(team: Team) -> usize {
-    match team {
-        Team::NorthSouth => 0,
-        Team::EastWest => 1,
+/// The inverse of [`seat_offset`]: the seat that many steps clockwise from the
+/// dealer.
+fn seat_from_offset(offset: usize) -> Seat {
+    match offset % 4 {
+        0 => Seat::Dealer,
+        1 => Seat::First,
+        2 => Seat::Second,
+        _ => Seat::Third,
     }
 }
 
@@ -628,12 +714,12 @@ fn is_full_deck(deck: &[Card; 24]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use euchre_interface::{Bid, Rank};
+    use euchre_interface::Rank;
 
-    /// The deck in canonical (unshuffled) order. With `first_dealer = North`
-    /// this deals deterministically:
-    ///   North: 9♣ 10♣ J♣ Q♣ K♣      East:  A♣ 9♦ 10♦ J♦ Q♦
-    ///   South: K♦ A♦ 9♥ 10♥ J♥      West:  Q♥ K♥ A♥ 9♠ 10♠
+    /// The deck in canonical (unshuffled) order. With `first_dealer = 0` (North),
+    /// North is the dealer (`Seat::Dealer`) and the deal is deterministic:
+    ///   Dealer/North:  9♣ 10♣ J♣ Q♣ K♣   First/East:   A♣ 9♦ 10♦ J♦ Q♦
+    ///   Second/South:  K♦ A♦ 9♥ 10♥ J♥   Third/West:   Q♥ K♥ A♥ 9♠ 10♠
     ///   up-card: J♠   kitty: Q♠ K♠ A♠
     fn ordered_deck() -> [Card; 24] {
         Card::deck().try_into().expect("24 cards")
@@ -643,11 +729,11 @@ mod tests {
         Card::new(rank, suit)
     }
 
-    /// Drives a game from the current point with a "first legal" policy until
-    /// the hand completes, returning the result. Bids are always passes (so a
-    /// hand only gets played if someone is forced or chooses to call before
-    /// this is invoked); discards and plays take the first available card.
-    fn play_out_first_legal(game: &mut Game) -> HandResult {
+    /// Drives a game from the current point with a "first legal" policy until the
+    /// hand completes. Bids are always passes (so a hand only gets played if
+    /// someone is forced or chooses to call before this is invoked); discards and
+    /// plays take the first available card.
+    fn play_out_first_legal(game: &mut Game) {
         loop {
             match game.next_action() {
                 Action::BidUpcard { .. } => game.apply(Decision::Upcard(UpcardBid::Pass)).unwrap(),
@@ -659,7 +745,7 @@ mod tests {
                 Action::Play { legal, .. } => {
                     game.apply(Decision::Play(legal[0])).unwrap();
                 }
-                Action::HandComplete { result, .. } => return result,
+                Action::HandComplete { .. } => return,
             }
         }
     }
@@ -674,7 +760,7 @@ mod tests {
         // First action asks the seat to the dealer's left.
         match game.next_action() {
             Action::BidUpcard { seat, up_card } => {
-                assert_eq!(seat, Seat::East);
+                assert_eq!(seat, Seat::First);
                 assert_eq!(up_card, card(Rank::Jack, Suit::Spades));
             }
             other => panic!("expected BidUpcard, got {other:?}"),
@@ -684,7 +770,7 @@ mod tests {
     #[test]
     fn passing_round_one_opens_round_two_with_turned_down_suit() {
         let mut game = Game::new(GameConfig::default(), ordered_deck());
-        // East, South, West, North all pass the up-card.
+        // All four seats pass the up-card.
         for _ in 0..4 {
             game.apply(Decision::Upcard(UpcardBid::Pass)).unwrap();
         }
@@ -694,7 +780,7 @@ mod tests {
                 turned_down,
                 may_pass,
             } => {
-                assert_eq!(seat, Seat::East);
+                assert_eq!(seat, Seat::First);
                 assert_eq!(turned_down, Suit::Spades);
                 assert!(may_pass);
             }
@@ -712,18 +798,18 @@ mod tests {
             game.apply(Decision::Call(CallBid::Pass)).unwrap();
         }
         match game.next_action() {
-            Action::HandComplete { result, dealer } => {
-                assert_eq!(result, HandResult::PassedOut);
-                assert_eq!(dealer, Seat::North);
+            Action::HandComplete { dealer } => {
+                assert_eq!(dealer, 0); // North dealt
             }
             other => panic!("expected HandComplete, got {other:?}"),
         }
-        assert_eq!(game.scores(), Scores::default());
+        assert_eq!(game.hand_result(Seat::First), HandResult::PassedOut);
+        assert_eq!(game.scores(), [0, 0]);
         assert!(!game.is_over());
 
-        // The deal rotates to the next seat on a redeal.
+        // The deal rotates to the next player on a redeal.
         game.start_next_hand(ordered_deck()).unwrap();
-        assert_eq!(game.dealer(), Seat::East);
+        assert_eq!(game.dealer(), 1); // East deals next
     }
 
     #[test]
@@ -738,14 +824,14 @@ mod tests {
         for _ in 0..4 {
             game.apply(Decision::Upcard(UpcardBid::Pass)).unwrap();
         }
-        // East, South, West pass the second round.
+        // First, Second, Third pass the second round.
         for _ in 0..3 {
             game.apply(Decision::Call(CallBid::Pass)).unwrap();
         }
-        // The dealer (North) is now stuck.
+        // The dealer is now stuck.
         match game.next_action() {
             Action::BidCall { seat, may_pass, .. } => {
-                assert_eq!(seat, Seat::North);
+                assert_eq!(seat, Seat::Dealer);
                 assert!(!may_pass);
             }
             other => panic!("expected BidCall, got {other:?}"),
@@ -757,7 +843,7 @@ mod tests {
         // Naming a legal suit succeeds and moves to play.
         game.apply(Decision::Call(CallBid::Call {
             suit: Suit::Hearts,
-            bid: Bid::WithPartner,
+            alone: false,
         }))
         .unwrap();
         assert_eq!(game.contract().unwrap().trump, Suit::Hearts);
@@ -767,29 +853,32 @@ mod tests {
     #[test]
     fn ordering_up_makes_the_dealer_pick_up_and_discard() {
         let mut game = Game::new(GameConfig::default(), ordered_deck());
-        // East orders up the J♠.
-        game.apply(Decision::Upcard(UpcardBid::OrderUp(Bid::WithPartner)))
+        // First (East) orders up the J♠.
+        game.apply(Decision::Upcard(UpcardBid::OrderUp { alone: false }))
             .unwrap();
         let contract = game.contract().expect("contract set");
         assert_eq!(contract.trump, Suit::Spades);
-        assert_eq!(contract.maker, Seat::East);
+        assert_eq!(contract.maker, Seat::First);
 
-        // The dealer (North) now holds six cards and must discard.
-        assert_eq!(game.hand(Seat::North).len(), HAND_SIZE + 1);
+        // The dealer now holds six cards and must discard.
+        assert_eq!(game.hand(Seat::Dealer).len(), HAND_SIZE + 1);
         let discard = match game.next_action() {
             Action::Discard { seat, .. } => {
-                assert_eq!(seat, Seat::North);
-                game.hand(Seat::North)[0]
+                assert_eq!(seat, Seat::Dealer);
+                game.hand(Seat::Dealer)[0]
             }
             other => panic!("expected Discard, got {other:?}"),
         };
         game.apply(Decision::Discard(discard)).unwrap();
-        assert_eq!(game.hand(Seat::North).len(), HAND_SIZE);
+        assert_eq!(game.hand(Seat::Dealer).len(), HAND_SIZE);
+        // The dealer's own view remembers the buried card.
+        assert_eq!(game.view(Seat::Dealer).discarded, Some(discard));
+        assert_eq!(game.view(Seat::First).discarded, None);
 
         // Play opens with the seat to the dealer's left.
         match game.next_action() {
             Action::Play { seat, legal } => {
-                assert_eq!(seat, Seat::East);
+                assert_eq!(seat, Seat::First);
                 assert_eq!(legal.len(), HAND_SIZE); // leading: whole hand is legal
             }
             other => panic!("expected Play, got {other:?}"),
@@ -799,11 +888,11 @@ mod tests {
     #[test]
     fn loner_seats_out_the_partner_and_skips_them_in_play() {
         let mut game = Game::new(GameConfig::default(), ordered_deck());
-        // East orders up alone; East's partner West sits out.
-        game.apply(Decision::Upcard(UpcardBid::OrderUp(Bid::Alone)))
+        // First orders up alone; First's partner (Third) sits out.
+        game.apply(Decision::Upcard(UpcardBid::OrderUp { alone: true }))
             .unwrap();
-        // Dealer still discards (North is not the one sitting out).
-        let discard = game.hand(Seat::North)[0];
+        // Dealer still discards (the dealer is not the one sitting out).
+        let discard = game.hand(Seat::Dealer)[0];
         game.apply(Decision::Discard(discard)).unwrap();
 
         let seats_played: std::collections::HashSet<Seat> = {
@@ -820,44 +909,71 @@ mod tests {
             }
             seen
         };
-        // Exactly three seats play, and West (the loner's partner) is not one.
+        // Exactly three seats play, and Third (the loner's partner) is not one.
         assert_eq!(seats_played.len(), 3);
-        assert!(!seats_played.contains(&Seat::West));
+        assert!(!seats_played.contains(&Seat::Third));
     }
 
     #[test]
     fn a_played_hand_awards_points_and_records_tricks() {
         let mut game = Game::new(GameConfig::default(), ordered_deck());
-        // East orders up, then play out first-legal.
-        game.apply(Decision::Upcard(UpcardBid::OrderUp(Bid::WithPartner)))
+        // First (East, team East/West) orders up, then play out first-legal.
+        game.apply(Decision::Upcard(UpcardBid::OrderUp { alone: false }))
             .unwrap();
-        let result = play_out_first_legal(&mut game);
-        let HandResult::Played(score) = result else {
-            panic!("expected a played hand, got {result:?}");
+        play_out_first_legal(&mut game);
+
+        // Seen from the maker's seat: positive points if the makers made it,
+        // negative if they were euchred.
+        let HandResult::Played(score) = game.hand_result(Seat::First) else {
+            panic!("expected a played hand");
         };
-        assert_eq!(score.makers, Team::EastWest);
         let defender_tricks = TRICKS_PER_HAND as u8 - score.maker_tricks;
-        let (team, points) = score.points_awarded;
-        if score.euchred {
+        if score.euchred() {
             assert!(score.maker_tricks < 3);
-            assert_eq!(team, Team::NorthSouth);
-            assert_eq!(points, 2);
+            assert_eq!(score.points_awarded, -2);
+        } else if score.march() {
+            assert_eq!(score.points_awarded, 2);
         } else {
-            assert!(score.maker_tricks >= 3);
-            assert_eq!(team, Team::EastWest);
-            assert_eq!(points, if score.march { 2 } else { 1 });
+            assert_eq!(score.points_awarded, 1);
         }
-        // The running score reflects exactly the points awarded.
-        assert_eq!(game.scores().for_team(team), points);
+        // Only one hand was played, so the whole table score is this hand's
+        // points, handed to exactly one team.
+        let scores = game.scores();
+        assert_eq!(scores[0] + scores[1], score.points_awarded.unsigned_abs());
         assert_eq!(score.maker_tricks + defender_tricks, TRICKS_PER_HAND as u8);
         assert_eq!(game.completed_tricks().len(), TRICKS_PER_HAND);
+    }
+
+    #[test]
+    fn player_and_seat_mappings_are_inverse() {
+        let mut game = Game::new(GameConfig::default(), ordered_deck());
+        assert_eq!(game.dealer(), 0);
+        for player in 0..4 {
+            assert_eq!(game.player_at(game.seat_of(player)), player);
+        }
+        // The dealer is always `Seat::Dealer`; First sits to its left.
+        assert_eq!(game.player_at(Seat::Dealer), 0);
+        assert_eq!(game.player_at(Seat::First), 1);
+
+        // After a redeal the mapping rotates with the deal.
+        game.apply(Decision::Upcard(UpcardBid::Pass)).unwrap();
+        for _ in 0..3 {
+            game.apply(Decision::Upcard(UpcardBid::Pass)).unwrap();
+        }
+        for _ in 0..4 {
+            game.apply(Decision::Call(CallBid::Pass)).unwrap();
+        }
+        game.start_next_hand(ordered_deck()).unwrap();
+        assert_eq!(game.dealer(), 1);
+        assert_eq!(game.player_at(Seat::Dealer), 1);
+        assert_eq!(game.player_at(Seat::First), 2);
     }
 
     #[test]
     fn wrong_decision_for_phase_is_rejected() {
         let mut game = Game::new(GameConfig::default(), ordered_deck());
         // We are in bidding, not play.
-        let some_card = game.hand(Seat::East)[0];
+        let some_card = game.hand(Seat::First)[0];
         assert_eq!(
             game.apply(Decision::Play(some_card)),
             Err(ApplyError::WrongPhase)
@@ -874,7 +990,7 @@ mod tests {
         assert_eq!(
             game.apply(Decision::Call(CallBid::Call {
                 suit: Suit::Spades,
-                bid: Bid::WithPartner,
+                alone: false,
             })),
             Err(ApplyError::IllegalCall(Suit::Spades))
         );

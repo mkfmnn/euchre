@@ -24,19 +24,29 @@
 //! `SCREAMING_SNAKE_CASE`. Cards are the compact two-letter codes from
 //! [`Card`](euchre_interface::Card) (e.g. `"JS"`, `"TH"`).
 
-use euchre_interface::{Card, Contract, GameRules, HandResult, Scores, Seat, Suit, Team, Trick};
+use euchre_interface::{Card, Contract, GameRules, HandResult, Scores, Seat, Suit, Trick};
 use serde::{Deserialize, Serialize};
+
+/// A fixed table position, stable across the whole match: `0` = North, `1` = East,
+/// `2` = South, `3` = West (partners are 0/2 and 1/3). Unlike the engine's
+/// dealer-relative [`Seat`], a player keeps the same `Player` for every hand, so
+/// it is the right identity to put on the wire.
+pub type Player = u8;
+
+/// A fixed team identity on the wire: `0` = North/South, `1` = East/West.
+pub type TeamId = u8;
 
 /// A message from a client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ClientMsg {
     /// The first message a client must send: announce a display name and,
-    /// optionally, a preferred seat. The server replies with [`ServerMsg::Joined`].
+    /// optionally, a preferred table position. The server replies with
+    /// [`ServerMsg::Joined`].
     Hello {
         name: String,
         #[serde(default)]
-        seat: Option<Seat>,
+        seat: Option<Player>,
     },
     /// Bid: in the first round, order up the up-card's suit; in the second,
     /// name `suit` as trump. `alone` requests going it alone.
@@ -53,17 +63,17 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ServerMsg {
-    /// Acknowledges a [`ClientMsg::Hello`]: the table roster, the seat assigned
-    /// to this client, and who deals the current hand.
+    /// Acknowledges a [`ClientMsg::Hello`]: the table roster, the table position
+    /// assigned to this client, and who deals the current hand.
     Joined {
         players: Vec<SeatedPlayer>,
-        your_seat: Seat,
-        first_dealer: Seat,
+        your_seat: Player,
+        first_dealer: Player,
     },
     /// A fresh hand has been dealt. Sent privately — `hand` is this client's
     /// cards only.
     Deal {
-        dealer: Seat,
+        dealer: Player,
         hand: Vec<Card>,
         up_card: Card,
     },
@@ -71,19 +81,24 @@ pub enum ServerMsg {
     /// whose turn it is; `legal`, the cards this seat may play, is populated
     /// only in the active player's own copy (and only when a card is due).
     Awaiting {
-        player: Seat,
+        player: Player,
         hint: TurnHint,
         #[serde(skip_serializing_if = "Option::is_none")]
         legal: Option<Vec<Card>>,
     },
     /// `player` took the action `action`. Broadcast to everyone.
-    Update { player: Seat, action: PublicAction },
+    Update {
+        player: Player,
+        action: PublicAction,
+    },
     /// `player` won the trick just completed.
-    TrickWon { player: Seat },
-    /// The hand ended; `result` is how it scored (or that it was passed out).
+    TrickWon { player: Player },
+    /// The hand ended; `result` is how it scored (or that it was passed out),
+    /// told from the receiving client's own team's point of view.
     HandComplete { result: HandResult },
-    /// The match ended.
-    GameOver { winner: Team, scores: Scores },
+    /// The match ended. `winner` is the winning team and `scores` is the final
+    /// score by team (index 0 = North/South).
+    GameOver { winner: TeamId, scores: [u8; 2] },
     /// Something the client sent could not be applied (bad message, illegal
     /// move, out of turn). Advisory — the server re-sends [`Awaiting`] so the
     /// client can try again.
@@ -128,23 +143,26 @@ pub enum PublicAction {
     Play { card: Card },
 }
 
-/// A seat's occupant, as listed in [`ServerMsg::Joined`].
+/// A table position's occupant, as listed in [`ServerMsg::Joined`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeatedPlayer {
-    pub seat: Seat,
+    pub seat: Player,
     pub name: String,
-    /// Whether this seat is filled by a server-side bot.
+    /// Whether this position is filled by a server-side bot.
     pub bot: bool,
 }
 
 /// An owned snapshot of everything a seat may see, for [`ServerMsg::Sync`].
 ///
 /// The owned analogue of the engine's borrowing
-/// [`GameView`](euchre_interface::GameView).
+/// [`GameView`](euchre_interface::GameView). The top-level `seat` and `dealer` are
+/// fixed table positions; the seats *inside* the trick history
+/// (`current_trick`, `completed_tricks`) are the engine's dealer-relative
+/// [`Seat`]s, and `scores` is told from this client's point of view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerView {
-    pub seat: Seat,
-    pub dealer: Seat,
+    pub seat: Player,
+    pub dealer: Player,
     pub hand: Vec<Card>,
     pub contract: Option<Contract>,
     pub current_trick: Trick,

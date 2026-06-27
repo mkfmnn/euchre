@@ -14,7 +14,7 @@
 //! `cargo run --release -p euchre-eval -- neural advanced`.
 
 use euchre_agents::{AdvancedAgent, HeuristicAgent, NeuralAgent, RandomAgent};
-use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
+use euchre_engine::{Driver, GameConfig, Player, Verbosity};
 use euchre_interface::Agent;
 
 /// Runs one match with the North/South team against the East/West team for a
@@ -24,7 +24,7 @@ fn play_match(
     seed: u64,
     mut ns: impl FnMut() -> Box<dyn Agent>,
     mut ew: impl FnMut() -> Box<dyn Agent>,
-) -> Team {
+) -> usize {
     let mut north = ns();
     let mut south = ns();
     let mut east = ew();
@@ -57,8 +57,8 @@ fn neural() -> Box<dyn Agent> {
 /// neural agent won (0, 1, or 2). Holding the deck fixed across the swap cancels
 /// deal luck, the same trick the eval harness uses.
 fn neural_wins_in_pair(seed: u64, opponent: impl Fn() -> Box<dyn Agent> + Copy) -> u32 {
-    let as_ns = play_match(seed, neural, opponent) == Team::NorthSouth;
-    let as_ew = play_match(seed, opponent, neural) == Team::EastWest;
+    let as_ns = play_match(seed, neural, opponent) == 0;
+    let as_ew = play_match(seed, opponent, neural) == 1;
     u32::from(as_ns) + u32::from(as_ew)
 }
 
@@ -69,7 +69,7 @@ fn neural_team_dominates_random_team() {
         .filter(|&seed| {
             play_match(seed as u64, neural, || {
                 Box::new(RandomAgent::with_seed(seed as u64 ^ 0xA1CE))
-            }) == Team::NorthSouth
+            }) == 0
         })
         .count();
 
@@ -140,5 +140,5 @@ fn a_full_neural_table_completes() {
     )
     .run()
     .expect("a headless match never fails on I/O");
-    assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+    assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
 }

@@ -75,10 +75,12 @@ async fn main() {
             ServerMsg::TrickWon { player } => println!("  -> {player:?} won the trick."),
             ServerMsg::HandComplete { result } => println!("Hand complete: {result:?}"),
             ServerMsg::GameOver { winner, scores } => {
-                println!(
-                    "GAME OVER — {winner:?} wins ({}-{}).",
-                    scores.north_south, scores.east_west
-                );
+                let team = if winner == 0 {
+                    "North/South"
+                } else {
+                    "East/West"
+                };
+                println!("GAME OVER — {team} wins ({}-{}).", scores[0], scores[1]);
             }
             ServerMsg::Error { message } => eprintln!("(error: {message})"),
             ServerMsg::Awaiting {
