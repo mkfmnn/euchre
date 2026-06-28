@@ -7,6 +7,14 @@
 //! reconstructed locally — most notably the dealer's picked-up up-card, which is
 //! folded into our hand exactly when the server asks us to discard.
 //!
+//! ## Identity
+//!
+//! The store works entirely in fixed table positions ([`Player`]: `0` = North …
+//! `3` = West), which is what every top-level wire field already carries. The
+//! one exception is a `SYNC` snapshot, whose trick history names seats
+//! *relative to the dealer* ([`Seat`]); those are converted to a `Player`
+//! with [`seatToPlayer`] as they are read in.
+//!
 //! Because the server (and its bots) emit events far faster than a human can
 //! follow, messages are not applied as they arrive: they go through a small
 //! render queue that paces them out (see the pacing constants below), applying
@@ -20,13 +28,13 @@ import type {
   CardCode,
   ClientMsg,
   HandScore,
+  Player,
   PublicAction,
-  Scores,
   Seat,
   SeatedPlayer,
   ServerMsg,
   Suit,
-  Team,
+  TeamId,
   TurnHint,
 } from './protocol';
 import { SUIT_SYMBOL, parseCard, sortHand } from './cards';
@@ -49,35 +57,34 @@ const TRICK_LINGER_MS = 1000;
 /** How long a hand's result lingers before the next hand is dealt. */
 const HAND_END_PAUSE_MS = 1500;
 
-const SEATS: Seat[] = ['North', 'East', 'South', 'West'];
+/** Fixed-team cumulative score, indexed by team (`0` = North/South). */
+type TeamScores = { north_south: number; east_west: number };
 
-function seatRecord<T>(value: () => T): Record<Seat, T> {
-  return { North: value(), East: value(), South: value(), West: value() };
+/** A fresh per-player array (`0` = North … `3` = West). */
+function playerArray<T>(value: () => T): T[] {
+  return [value(), value(), value(), value()];
 }
 
-function partnerOf(seat: Seat): Seat {
-  switch (seat) {
-    case 'North':
-      return 'South';
-    case 'South':
-      return 'North';
-    case 'East':
-      return 'West';
-    case 'West':
-      return 'East';
-  }
+/** A player's partner, sitting across the table. */
+function partnerOf(player: Player): Player {
+  return (player + 2) % 4;
 }
 
-function teamShort(team: Team): string {
-  return team === 'NorthSouth' ? 'N/S' : 'E/W';
+/** A player's fixed team (`0` = North/South, `1` = East/West). */
+function teamOf(player: Player): TeamId {
+  return player % 2;
 }
 
-function describeHand(score: HandScore): string {
-  const [team, points] = score.points_awarded;
-  const who = teamShort(team);
-  if (score.euchred) return `${who} euchred the makers for ${points}!`;
-  if (score.march) return `${who} swept the hand${score.alone ? ' alone' : ''} for ${points}!`;
-  return `${who} made it for ${points}.`;
+/** Clockwise steps from the dealer to each dealer-relative seat. */
+const SEAT_OFFSET: Record<Seat, number> = { First: 1, Second: 2, Third: 3, Dealer: 0 };
+
+/** Resolves a dealer-relative wire seat to its fixed table position. */
+function seatToPlayer(seat: Seat, dealer: Player): Player {
+  return (dealer + SEAT_OFFSET[seat]) % 4;
+}
+
+function teamShort(team: TeamId): string {
+  return team === 0 ? 'N/S' : 'E/W';
 }
 
 /** Whether rendering this message advances the pacing clock (a visible beat). */
@@ -99,9 +106,9 @@ export class GameStore {
   error = $state<string | null>(null);
 
   // --- table identity -----------------------------------------------------
-  mySeat = $state<Seat | null>(null);
-  players = $state<Record<Seat, SeatedPlayer | null>>(seatRecord<SeatedPlayer | null>(() => null));
-  dealer = $state<Seat | null>(null);
+  mySeat = $state<Player | null>(null);
+  players = $state<(SeatedPlayer | null)[]>(playerArray<SeatedPlayer | null>(() => null));
+  dealer = $state<Player | null>(null);
 
   // --- bidding ------------------------------------------------------------
   upCard = $state<CardCode | null>(null);
@@ -109,39 +116,39 @@ export class GameStore {
 
   // --- contract -----------------------------------------------------------
   trump = $state<Suit | null>(null);
-  maker = $state<Seat | null>(null);
+  maker = $state<Player | null>(null);
   alone = $state(false);
 
   // --- the play -----------------------------------------------------------
   hand = $state<CardCode[]>([]);
   /** Cards resting on the felt for the trick in progress. */
-  table = $state<{ seat: Seat; card: CardCode }[]>([]);
+  table = $state<{ seat: Player; card: CardCode }[]>([]);
   /** A finished trick mid-sweep toward its winner (kept separate so the new
    *  trick can start building underneath the animation). */
-  collecting = $state<{ plays: { seat: Seat; card: CardCode }[]; winner: Seat } | null>(null);
+  collecting = $state<{ plays: { seat: Player; card: CardCode }[]; winner: Player } | null>(null);
 
   // --- turn ---------------------------------------------------------------
-  whoseTurn = $state<Seat | null>(null);
+  whoseTurn = $state<Player | null>(null);
   hint = $state<TurnHint | null>(null);
   legal = $state<CardCode[] | null>(null);
 
   // --- bookkeeping --------------------------------------------------------
-  scores = $state<Scores>({ north_south: 0, east_west: 0 });
+  scores = $state<TeamScores>({ north_south: 0, east_west: 0 });
   /** The match target; the server uses 10 by default and does not send it. */
   readonly targetScore = 10;
-  tricksWon = $state<Record<Seat, number>>(seatRecord(() => 0));
-  cardsLeft = $state<Record<Seat, number>>(seatRecord(() => 5));
-  bubbles = $state<Record<Seat, ActionBubble | null>>(seatRecord<ActionBubble | null>(() => null));
+  tricksWon = $state<number[]>(playerArray(() => 0));
+  cardsLeft = $state<number[]>(playerArray(() => 5));
+  bubbles = $state<(ActionBubble | null)[]>(playerArray<ActionBubble | null>(() => null));
 
   // --- transient notices --------------------------------------------------
   banner = $state<string | null>(null);
   toast = $state<string | null>(null);
-  gameOver = $state<{ winner: Team; scores: Scores } | null>(null);
+  gameOver = $state<{ winner: TeamId; scores: TeamScores } | null>(null);
 
   // --- private ------------------------------------------------------------
   private ws: WebSocket | null = null;
   private name = 'You';
-  private preferredSeat: Seat | null = null;
+  private preferredSeat: Player | null = null;
   private lastBidUp = true;
   private bubbleSeq = 0;
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -156,8 +163,8 @@ export class GameStore {
   private lastRenderAt = Number.NEGATIVE_INFINITY;
 
   // --- derived (used by the UI) ------------------------------------------
-  get sittingOut(): Seat | null {
-    return this.alone && this.maker ? partnerOf(this.maker) : null;
+  get sittingOut(): Player | null {
+    return this.alone && this.maker !== null ? partnerOf(this.maker) : null;
   }
   get myTurn(): boolean {
     return this.mySeat !== null && this.whoseTurn === this.mySeat;
@@ -173,7 +180,7 @@ export class GameStore {
   }
 
   // --- connection ---------------------------------------------------------
-  connect(url: string, name: string, seat: Seat | null): void {
+  connect(url: string, name: string, seat: Player | null): void {
     this.name = name.trim() || 'You';
     this.preferredSeat = seat;
     this.error = null;
@@ -301,7 +308,7 @@ export class GameStore {
       case 'JOINED': {
         this.mySeat = msg.your_seat;
         this.dealer = msg.first_dealer;
-        const players = seatRecord<SeatedPlayer | null>(() => null);
+        const players = playerArray<SeatedPlayer | null>(() => null);
         for (const p of msg.players) players[p.seat] = p;
         this.players = players;
         this.status = 'joined';
@@ -310,20 +317,23 @@ export class GameStore {
       case 'SYNC': {
         const v = msg.view;
         this.dealer = v.dealer;
-        this.scores = v.scores;
+        this.scores = this.fixedScores(v.scores.us, v.scores.them);
         if (v.contract) {
           this.trump = v.contract.trump;
-          this.maker = v.contract.maker;
+          this.maker = seatToPlayer(v.contract.maker, v.dealer);
           this.alone = v.contract.alone;
         }
         this.hand = sortHand(v.hand, this.trump);
-        this.table = v.current_trick.plays.map((p) => ({ seat: p.seat, card: p.card }));
-        const won = seatRecord(() => 0);
-        for (const [, winner] of v.completed_tricks) won[winner] += 1;
+        this.table = v.current_trick.plays.map((p) => ({
+          seat: seatToPlayer(p.seat, v.dealer),
+          card: p.card,
+        }));
+        const won = playerArray(() => 0);
+        for (const [, winner] of v.completed_tricks) won[seatToPlayer(winner, v.dealer)] += 1;
         this.tricksWon = won;
-        const left = seatRecord(() => 5 - v.completed_tricks.length);
-        for (const p of v.current_trick.plays) left[p.seat] -= 1;
-        if (this.sittingOut) left[this.sittingOut] = 0;
+        const left = playerArray(() => 5 - v.completed_tricks.length);
+        for (const p of v.current_trick.plays) left[seatToPlayer(p.seat, v.dealer)] -= 1;
+        if (this.sittingOut !== null) left[this.sittingOut] = 0;
         this.cardsLeft = left;
         break;
       }
@@ -341,9 +351,9 @@ export class GameStore {
         this.whoseTurn = null;
         this.hint = null;
         this.legal = null;
-        this.tricksWon = seatRecord(() => 0);
-        this.cardsLeft = seatRecord(() => 5);
-        this.bubbles = seatRecord<ActionBubble | null>(() => null);
+        this.tricksWon = playerArray(() => 0);
+        this.cardsLeft = playerArray(() => 5);
+        this.bubbles = playerArray<ActionBubble | null>(() => null);
         this.banner = null;
         break;
       }
@@ -378,19 +388,15 @@ export class GameStore {
           this.flashBanner('Hand passed out — no one scored.');
         } else {
           const score = msg.result.Played;
-          const [team, points] = score.points_awarded;
-          if (team === 'NorthSouth') {
-            this.scores = { ...this.scores, north_south: this.scores.north_south + points };
-          } else {
-            this.scores = { ...this.scores, east_west: this.scores.east_west + points };
-          }
-          this.flashBanner(describeHand(score));
+          this.addScore(score.points_awarded);
+          this.flashBanner(this.describeHand(score));
         }
         break;
       }
       case 'GAME_OVER': {
-        this.scores = msg.scores;
-        this.gameOver = { winner: msg.winner, scores: msg.scores };
+        const scores = { north_south: msg.scores[0], east_west: msg.scores[1] };
+        this.scores = scores;
+        this.gameOver = { winner: msg.winner, scores };
         break;
       }
       case 'ERROR': {
@@ -400,7 +406,7 @@ export class GameStore {
     }
   }
 
-  private applyAction(player: Seat, action: PublicAction): void {
+  private applyAction(player: Player, action: PublicAction): void {
     switch (action.type) {
       case 'BID': {
         this.trump = action.suit;
@@ -409,7 +415,7 @@ export class GameStore {
         this.upCardLive = false;
         const verb = this.lastBidUp ? 'orders up' : 'calls';
         this.setBubble(player, `${verb} ${SUIT_SYMBOL[action.suit]}${action.alone ? ' alone' : ''}`);
-        if (this.sittingOut) this.cardsLeft[this.sittingOut] = 0;
+        if (this.sittingOut !== null) this.cardsLeft[this.sittingOut] = 0;
         break;
       }
       case 'PASS': {
@@ -432,9 +438,41 @@ export class GameStore {
     }
   }
 
+  // --- scoring ------------------------------------------------------------
+  /** Folds a point-of-view (us/them) score into the fixed-team representation. */
+  private fixedScores(us: number, them: number): TeamScores {
+    const mine = this.mySeat === null ? 0 : teamOf(this.mySeat);
+    return mine === 0
+      ? { north_south: us, east_west: them }
+      : { north_south: them, east_west: us };
+  }
+
+  /** Adds a hand's net points (signed toward our team) to the running score. */
+  private addScore(points: number): void {
+    const mine = this.mySeat === null ? 0 : teamOf(this.mySeat);
+    // Exactly one team scores a hand: positive points go to ours, negative to theirs.
+    const gain = mine === 0 ? points : -points;
+    if (gain >= 0) {
+      this.scores = { ...this.scores, north_south: this.scores.north_south + gain };
+    } else {
+      this.scores = { ...this.scores, east_west: this.scores.east_west - gain };
+    }
+  }
+
+  /** A short caption for how the just-finished hand scored. */
+  private describeHand(score: HandScore): string {
+    const points = Math.abs(score.points_awarded);
+    const euchred = score.maker_tricks < 3;
+    const march = score.maker_tricks === 5;
+    const makerTeam = this.maker === null ? 0 : teamOf(this.maker);
+    if (euchred) return `${teamShort((makerTeam + 1) % 2)} euchred the makers for ${points}!`;
+    if (march) return `${teamShort(makerTeam)} swept the hand${this.alone ? ' alone' : ''} for ${points}!`;
+    return `${teamShort(makerTeam)} made it for ${points}.`;
+  }
+
   // --- helpers ------------------------------------------------------------
   /** Lift the finished trick off the felt and fly it to the winner. */
-  private sweep(winner: Seat): void {
+  private sweep(winner: Player): void {
     this.clearCollectTimers();
     this.collecting = { plays: this.table, winner };
     this.table = [];
@@ -465,7 +503,7 @@ export class GameStore {
     this.legal = null;
   }
 
-  private setBubble(seat: Seat, text: string): void {
+  private setBubble(seat: Player, text: string): void {
     const key = ++this.bubbleSeq;
     this.bubbles[seat] = { text, key };
     this.timers.push(
@@ -504,6 +542,3 @@ export class GameStore {
     this.clearCollectTimers();
   }
 }
-
-// Keep the seat list exported for any future per-seat iteration needs.
-export { SEATS };

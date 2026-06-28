@@ -42,7 +42,9 @@ types and templates are clean.
 The wire protocol is mirrored in [`src/lib/protocol.ts`](src/lib/protocol.ts),
 matching `euchre-server`'s `protocol.rs` exactly: tagged JSON messages
 (`"type"` / `"kind"` in `SCREAMING_SNAKE_CASE`), two-letter card codes (`"JS"`),
-and suit/seat/team names spelled as their Rust variants.
+and suit names spelled as their Rust variants. Players are fixed table positions
+(`0` = North … `3` = West); only a `SYNC` snapshot's trick history uses the
+engine's dealer-relative seat names, which the store resolves on the way in.
 
 The protocol is **event-sourced**, and so is the client. After the `HELLO`
 handshake the server sends a private `DEAL`, then a stream of `AWAITING`,
@@ -57,8 +59,8 @@ the server asks that seat to discard.
 - `src/lib/protocol.ts` — TypeScript types for every wire message.
 - `src/lib/cards.ts` — card parsing and the trump/bower comparison rules, ported
   from `euchre-interface`, used to sort hands and highlight trump.
-- `src/lib/seating.ts` — maps absolute seats to on-screen positions (you at the
-  bottom) and the fly-in/out directions for animations.
+- `src/lib/seating.ts` — maps fixed table positions to on-screen positions (you
+  at the bottom) and the fly-in/out directions for animations.
 - `src/lib/game.svelte.ts` — the websocket client and event-sourced game state.
 - `src/components/` — the Svelte views: the table, hands, trick area, bidding
   controls, scoreboard, and start screen.

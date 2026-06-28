@@ -1,28 +1,31 @@
-//! Mapping absolute seats to on-screen positions, relative to the viewer.
+//! Mapping fixed table positions to on-screen positions, relative to the viewer.
 //!
-//! The local player always sits at the bottom; the rest fall out from the
-//! clockwise order N → E → S → W. Each position also carries a fly offset — the
-//! direction a card travels from when played from that seat (and toward when a
-//! trick is swept to its winner).
+//! The local player always sits at the bottom; the rest fall out from the fixed
+//! clockwise order N → E → S → W (player `0` → `1` → `2` → `3`). Each position
+//! also carries a fly offset — the direction a card travels from when played
+//! from that seat (and toward when a trick is swept to its winner).
 
-import type { Seat } from './protocol';
+import type { Player } from './protocol';
+
+/** Conventional name of each fixed table position, used as a name fallback. */
+export const PLAYER_LABELS = ['North', 'East', 'South', 'West'];
 
 /** The four on-screen positions, viewer at the bottom. */
 export type RelPos = 'bottom' | 'left' | 'top' | 'right';
 
-const CLOCKWISE: Seat[] = ['North', 'East', 'South', 'West'];
 const POSITIONS: RelPos[] = ['bottom', 'left', 'top', 'right'];
 
-/** Where `seat` should be drawn, given the viewer occupies `me`. */
-export function relativePosition(me: Seat, seat: Seat): RelPos {
-  const delta = (CLOCKWISE.indexOf(seat) - CLOCKWISE.indexOf(me) + 4) % 4;
-  return POSITIONS[delta];
+/** Where `player` should be drawn, given the viewer occupies `me`. */
+export function relativePosition(me: Player, player: Player): RelPos {
+  // Players are numbered clockwise, so the on-screen position is just the
+  // clockwise distance from the viewer.
+  return POSITIONS[(player - me + 4) % 4];
 }
 
-/** The seat occupying each on-screen position for viewer `me`. */
-export function seatsByPosition(me: Seat): Record<RelPos, Seat> {
-  const out = {} as Record<RelPos, Seat>;
-  for (const seat of CLOCKWISE) out[relativePosition(me, seat)] = seat;
+/** The player occupying each on-screen position for viewer `me`. */
+export function playersByPosition(me: Player): Record<RelPos, Player> {
+  const out = {} as Record<RelPos, Player>;
+  for (let p = 0; p < 4; p++) out[relativePosition(me, p)] = p;
   return out;
 }
 

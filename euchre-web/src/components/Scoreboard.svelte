@@ -1,11 +1,15 @@
 <script lang="ts">
   import { getGame } from '../lib/context';
   import { SUIT_SYMBOL, isRed } from '../lib/cards';
+  import { PLAYER_LABELS } from '../lib/seating';
 
   const game = getGame();
-  const makerName = $derived(game.maker ? (game.players[game.maker]?.name ?? game.maker) : null);
+  const makerName = $derived(
+    game.maker === null ? null : (game.players[game.maker]?.name ?? PLAYER_LABELS[game.maker]),
+  );
+  // Players 0/2 are North/South; 1/3 are East/West.
   const myTeam = $derived(
-    game.mySeat === 'North' || game.mySeat === 'South' ? 'north_south' : 'east_west',
+    game.mySeat !== null && game.mySeat % 2 === 0 ? 'north_south' : 'east_west',
   );
 </script>
 

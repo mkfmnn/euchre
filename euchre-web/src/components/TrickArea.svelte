@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getGame } from '../lib/context';
-  import type { Seat } from '../lib/protocol';
+  import type { Player } from '../lib/protocol';
   import { relativePosition, FLY_OFFSET } from '../lib/seating';
   import PlayingCard from './PlayingCard.svelte';
   import { fly } from 'svelte/transition';
@@ -9,7 +9,7 @@
   const game = getGame();
 
   // `mySeat` is always set once the table view is shown.
-  const pos = (seat: Seat) => relativePosition(game.mySeat!, seat);
+  const pos = (seat: Player) => relativePosition(game.mySeat!, seat);
   const winnerPos = $derived(
     game.collecting ? relativePosition(game.mySeat!, game.collecting.winner) : null,
   );

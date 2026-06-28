@@ -1,11 +1,11 @@
 <script lang="ts">
   import { getGame } from '../lib/context';
-  import type { Seat } from '../lib/protocol';
+  import type { Player } from '../lib/protocol';
   import type { RelPos } from '../lib/seating';
   import PlayingCard from './PlayingCard.svelte';
   import { flip } from 'svelte/animate';
 
-  let { seat, pos }: { seat: Seat; pos: RelPos } = $props();
+  let { seat, pos }: { seat: Player; pos: RelPos } = $props();
   const game = getGame();
 
   const backs = $derived(Array.from({ length: game.cardsLeft[seat] }, (_, i) => i));

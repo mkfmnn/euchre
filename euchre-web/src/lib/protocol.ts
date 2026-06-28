@@ -6,33 +6,60 @@
 //   * enums tagged with a `"type"` (or, for `TurnHint`, `"kind"`) field in
 //     `SCREAMING_SNAKE_CASE`;
 //   * `Card`s as the compact two-letter codes (e.g. `"JS"`, `"TH"`);
-//   * `Suit` / `Seat` / `Team` as their Rust variant names (`"Hearts"`,
-//     `"North"`, `"NorthSouth"`);
+//   * `Suit` as its Rust variant name (`"Hearts"`);
 //   * `HandResult` as an externally-tagged enum (`"PassedOut"` or
-//     `{ "Played": HandScore }`), and tuples (`points_awarded`) as arrays.
+//     `{ "Played": HandScore }`).
+//
+// ## Two identities on the wire
+//
+// The server speaks two seat identities, and the distinction matters:
+//
+//   * `Player` — a **fixed** table position (`0` = North … `3` = West), stable
+//     across the whole match. Every top-level message field that names a
+//     participant (`your_seat`, `dealer`, `player`, `maker` of the played card,
+//     `SeatedPlayer.seat`) is a `Player`. This is the identity the UI works in.
+//   * `Seat` — the engine's **dealer-relative** seat (`First` is the
+//     dealer's left, around to `Dealer`), which rotates each hand. It appears
+//     only *inside* the trick history of a `SYNC` snapshot (`Play.seat`,
+//     `completed_tricks` winners, and a `Contract.maker`). Convert these to a
+//     `Player` with the snapshot's `dealer` before use.
 
 /** A suit, spelled as its Rust variant name. */
 export type Suit = 'Clubs' | 'Diamonds' | 'Hearts' | 'Spades';
 
-/** A seat at the table, clockwise N → E → S → W. */
-export type Seat = 'North' | 'East' | 'South' | 'West';
+/**
+ * A fixed table position, stable for the whole match: `0` = North, `1` = East,
+ * `2` = South, `3` = West. Partners are `0`/`2` and `1`/`3`.
+ */
+export type Player = number;
 
-/** A partnership: North/South or East/West. */
-export type Team = 'NorthSouth' | 'EastWest';
+/**
+ * The engine's dealer-relative seat, used only inside a `SYNC` snapshot's trick
+ * history. `First` is the dealer's immediate left, then `Second`, `Third`, and
+ * `Dealer`. Resolve to a {@link Player} via the snapshot's `dealer`.
+ */
+export type Seat = 'First' | 'Second' | 'Third' | 'Dealer';
+
+/** A fixed team identity: `0` = North/South, `1` = East/West. */
+export type TeamId = number;
 
 /** A card's compact two-letter wire code, e.g. `"JS"`, `"TH"`, `"9C"`. */
 export type CardCode = string;
 
 export interface SeatedPlayer {
-  seat: Seat;
+  seat: Player;
   name: string;
-  /** Whether this seat is filled by a server-side bot. */
+  /** Whether this position is filled by a server-side bot. */
   bot: boolean;
 }
 
+/**
+ * Cumulative match score, told from the receiving client's point of view: `us`
+ * is the client's own team, `them` the opponents'.
+ */
 export interface Scores {
-  north_south: number;
-  east_west: number;
+  us: number;
+  them: number;
 }
 
 export interface GameRules {
@@ -41,6 +68,7 @@ export interface GameRules {
 
 export interface Contract {
   trump: Suit;
+  /** Dealer-relative inside a `SYNC` snapshot; resolve with the snapshot's `dealer`. */
   maker: Seat;
   alone: boolean;
 }
@@ -67,26 +95,28 @@ export type PublicAction =
   | { type: 'DISCARD' }
   | { type: 'PLAY'; card: CardCode };
 
+/**
+ * How a played hand scored, told from the receiving client's point of view.
+ * `points_awarded` is the net points to the client's own team: positive if it
+ * scored, negative if the opponents did.
+ */
 export interface HandScore {
-  makers: Team;
   maker_tricks: number;
-  euchred: boolean;
-  march: boolean;
-  alone: boolean;
-  /** `[team, points]`. */
-  points_awarded: [Team, number];
+  points_awarded: number;
 }
 
 /** Externally-tagged: the string `"PassedOut"` or `{ Played: HandScore }`. */
 export type HandResult = 'PassedOut' | { Played: HandScore };
 
 export interface PlayerView {
-  seat: Seat;
-  dealer: Seat;
+  /** Fixed table position of the viewer. */
+  seat: Player;
+  /** Fixed table position of the dealer. */
+  dealer: Player;
   hand: CardCode[];
   contract: Contract | null;
   current_trick: Trick;
-  /** `[trick, winner]` pairs, oldest first. */
+  /** `[trick, winner]` pairs, oldest first; winners are dealer-relative seats. */
   completed_tricks: [Trick, Seat][];
   scores: Scores;
   rules: GameRules;
@@ -94,19 +124,19 @@ export interface PlayerView {
 
 /** A message from the server to this client. */
 export type ServerMsg =
-  | { type: 'JOINED'; players: SeatedPlayer[]; your_seat: Seat; first_dealer: Seat }
-  | { type: 'DEAL'; dealer: Seat; hand: CardCode[]; up_card: CardCode }
-  | { type: 'AWAITING'; player: Seat; hint: TurnHint; legal?: CardCode[] }
-  | { type: 'UPDATE'; player: Seat; action: PublicAction }
-  | { type: 'TRICK_WON'; player: Seat }
+  | { type: 'JOINED'; players: SeatedPlayer[]; your_seat: Player; first_dealer: Player }
+  | { type: 'DEAL'; dealer: Player; hand: CardCode[]; up_card: CardCode }
+  | { type: 'AWAITING'; player: Player; hint: TurnHint; legal?: CardCode[] }
+  | { type: 'UPDATE'; player: Player; action: PublicAction }
+  | { type: 'TRICK_WON'; player: Player }
   | { type: 'HAND_COMPLETE'; result: HandResult }
-  | { type: 'GAME_OVER'; winner: Team; scores: Scores }
+  | { type: 'GAME_OVER'; winner: TeamId; scores: [number, number] }
   | { type: 'ERROR'; message: string }
   | { type: 'SYNC'; view: PlayerView };
 
 /** A message from this client to the server. */
 export type ClientMsg =
-  | { type: 'HELLO'; name: string; seat?: Seat | null }
+  | { type: 'HELLO'; name: string; seat?: Player | null }
   | { type: 'BID'; suit: Suit; alone: boolean }
   | { type: 'PASS' }
   | { type: 'DISCARD'; card: CardCode }

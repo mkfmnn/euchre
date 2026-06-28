@@ -9,8 +9,8 @@
 
   function connect(event: SubmitEvent): void {
     event.preventDefault();
-    // Sit South so the local player is at the bottom of the table.
-    game.connect(url.trim(), name, 'South');
+    // Sit South (player 2) so the local player is at the bottom of the table.
+    game.connect(url.trim(), name, 2);
   }
 </script>
 

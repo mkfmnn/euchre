@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getGame } from '../lib/context';
-  import { seatsByPosition } from '../lib/seating';
-  import type { Team } from '../lib/protocol';
+  import { playersByPosition } from '../lib/seating';
+  import type { TeamId } from '../lib/protocol';
   import Seat from './Seat.svelte';
   import OpponentHand from './OpponentHand.svelte';
   import Hand from './Hand.svelte';
@@ -12,8 +12,8 @@
   import { fade, scale } from 'svelte/transition';
 
   const game = getGame();
-  const seats = $derived(seatsByPosition(game.mySeat!));
-  const teamName = (t: Team) => (t === 'NorthSouth' ? 'North / South' : 'East / West');
+  const seats = $derived(playersByPosition(game.mySeat!));
+  const teamName = (t: TeamId) => (t === 0 ? 'North / South' : 'East / West');
 </script>
 
 <div class="table">

@@ -1,13 +1,14 @@
 <script lang="ts">
   import { getGame } from '../lib/context';
-  import type { Seat } from '../lib/protocol';
+  import type { Player } from '../lib/protocol';
+  import { PLAYER_LABELS } from '../lib/seating';
   import { fade } from 'svelte/transition';
 
-  let { seat }: { seat: Seat } = $props();
+  let { seat }: { seat: Player } = $props();
   const game = getGame();
 
   const player = $derived(game.players[seat]);
-  const name = $derived(player?.name ?? seat);
+  const name = $derived(player?.name ?? PLAYER_LABELS[seat]);
   const isDealer = $derived(game.dealer === seat);
   const isMaker = $derived(game.maker === seat);
   const isTurn = $derived(game.whoseTurn === seat);
