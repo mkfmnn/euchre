@@ -1,9 +1,5 @@
 [workspace]
 members = [
-    "crates/euchre-interface",
-    "crates/euchre-engine",
-    "crates/euchre-agents",
-    "crates/euchre-server",
-    "crates/euchre-eval",
+    "crates/*",
 ]
 resolver = "2"
