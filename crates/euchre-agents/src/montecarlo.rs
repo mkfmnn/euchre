@@ -30,13 +30,13 @@
 //! heuristic passed when the search is sure it profits. **Discarding stays
 //! delegated.** The search can be turned off with [`MonteCarloAgent::play_only`].
 
-use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Rank, Seat, Suit, Team, UpcardBid};
+use euchre_interface::{Agent, CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::{IndexedRandom, SliceRandom};
 
 use crate::AdvancedAgent;
-use crate::solver::{self, DdState, card_index, seat_index, suit_index};
+use crate::solver::{self, DdState, card_index, seat_index, suit_index, team_index};
 
 /// Worlds sampled per play decision in the default configuration. Enough to
 /// clearly out-play the heuristic agents while keeping a match fast.
@@ -308,7 +308,7 @@ impl MonteCarloAgent {
         up_card: Option<Card>,
     ) -> ([Vec<Card>; 4], Seat) {
         let me = view.seat;
-        let dealer = view.dealer;
+        let dealer = Seat::Dealer;
         let sitting_out = alone.then(|| me.partner());
 
         let mut pool: Vec<Card> = Card::deck()
@@ -353,7 +353,7 @@ impl MonteCarloAgent {
         up_card: Option<Card>,
     ) -> f64 {
         let me = view.seat;
-        let maker_team = me.team();
+        let maker_team = team_index(me);
         let sitting_out = alone.then(|| me.partner());
         let mut total = 0i32;
         for _ in 0..self.bid_determinizations {
@@ -372,10 +372,10 @@ impl MonteCarloAgent {
         &mut self,
         view: &GameView<'_>,
         trump: Suit,
-        default_bid: Bid,
+        default_alone: bool,
         up_card: Option<Card>,
         can_pass: bool,
-    ) -> Option<Bid> {
+    ) -> Option<bool> {
         // The with-partner value is optimistic (double-dummy trusts the partner);
         // the alone value is not, so only the former takes the haircut.
         let ev_partner = self.contract_ev(view, trump, false, up_card) - HAIRCUT;
@@ -384,14 +384,14 @@ impl MonteCarloAgent {
         if can_pass && ev_partner.max(ev_alone) < -VETO_MARGIN {
             return None;
         }
-        let bid = if ev_alone >= ev_partner + LONER_MARGIN {
-            Bid::Alone
+        let alone = if ev_alone >= ev_partner + LONER_MARGIN {
+            true
         } else if ev_partner >= ev_alone + LONER_MARGIN {
-            Bid::WithPartner
+            false
         } else {
-            default_bid
+            default_alone
         };
-        Some(bid)
+        Some(alone)
     }
 }
 
@@ -402,8 +402,9 @@ impl Default for MonteCarloAgent {
 }
 
 impl Agent for MonteCarloAgent {
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid {
-        let base = self.advanced.bid_upcard(view, up_card);
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid {
+        let up_card = view.up_card;
+        let base = self.advanced.bid_upcard(view);
         if !self.bid_search {
             return base;
         }
@@ -411,9 +412,9 @@ impl Agent for MonteCarloAgent {
         match base {
             // Refine a make: veto a clear loser (round-one passing is always safe)
             // or retune alone-vs-partner.
-            UpcardBid::OrderUp(bid) => {
-                match self.refine_make(view, trump, bid, Some(up_card), true) {
-                    Some(b) => UpcardBid::OrderUp(b),
+            UpcardBid::OrderUp { alone } => {
+                match self.refine_make(view, trump, alone, Some(up_card), true) {
+                    Some(b) => UpcardBid::OrderUp { alone: b },
                     None => UpcardBid::Pass,
                 }
             }
@@ -421,7 +422,7 @@ impl Agent for MonteCarloAgent {
             // profit (a cheap filter that avoids searching hopeless passes) and the
             // search is clearly confident.
             UpcardBid::Pass => {
-                let mine = trump_count(view.hand, trump) + usize::from(view.seat == view.dealer); // I would take the up-card
+                let mine = trump_count(view.hand, trump) + usize::from(view.seat == Seat::Dealer); // I would take the up-card
                 if mine < 2 {
                     return UpcardBid::Pass;
                 }
@@ -430,22 +431,22 @@ impl Agent for MonteCarloAgent {
                 if ev_partner.max(ev_alone) < UPGRADE_MARGIN {
                     UpcardBid::Pass
                 } else if ev_alone >= ev_partner + LONER_MARGIN {
-                    UpcardBid::OrderUp(Bid::Alone)
+                    UpcardBid::OrderUp { alone: true }
                 } else {
-                    UpcardBid::OrderUp(Bid::WithPartner)
+                    UpcardBid::OrderUp { alone: false }
                 }
             }
         }
     }
 
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
-        let base = self.advanced.bid_call(view, turned_down);
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+        let base = self.advanced.bid_call(view);
         match base {
-            CallBid::Call { suit, bid } if self.bid_search => {
+            CallBid::Call { suit, alone } if self.bid_search => {
                 // "Stick the dealer" forbids a forced dealer from passing.
-                let can_pass = !(view.rules.stick_the_dealer && view.seat == view.dealer);
-                match self.refine_make(view, suit, bid, None, can_pass) {
-                    Some(b) => CallBid::Call { suit, bid: b },
+                let can_pass = !(view.rules.stick_the_dealer && view.seat == Seat::Dealer);
+                match self.refine_make(view, suit, alone, None, can_pass) {
+                    Some(b) => CallBid::Call { suit, alone: b },
                     None => CallBid::Pass,
                 }
             }
@@ -464,7 +465,7 @@ impl Agent for MonteCarloAgent {
         let trump = view.trump().expect("trump is set during play");
         let contract = view.contract.expect("a hand in play has a contract");
         let me = view.seat;
-        let maker_team = contract.maker.team();
+        let maker_team = team_index(contract.maker);
 
         // The advanced agent's choice is the default; the search must beat it
         // convincingly to override it.
@@ -508,16 +509,17 @@ impl Agent for MonteCarloAgent {
 }
 
 /// The signed match points the hand is worth to `me`'s team when the makers take
-/// `maker_tricks`, replicating the engine's scoring exactly.
-fn my_team_score(maker_tricks: u8, maker_team: Team, alone: bool, me: Seat) -> i32 {
+/// `maker_tricks`, replicating the engine's scoring exactly. `maker_team` is the
+/// relative team index (see [`team_index`]).
+fn my_team_score(maker_tricks: u8, maker_team: usize, alone: bool, me: Seat) -> i32 {
     let (scoring_team, points) = if maker_tricks < 3 {
-        (maker_team.opponent(), 2) // euchred
+        (1 - maker_team, 2) // euchred
     } else if maker_tricks == 5 {
         (maker_team, if alone { 4 } else { 2 }) // march
     } else {
         (maker_team, 1)
     };
-    if scoring_team == me.team() {
+    if scoring_team == team_index(me) {
         points
     } else {
         -points
@@ -592,7 +594,7 @@ mod tests {
 
     fn make_view<'a>(
         seat: Seat,
-        dealer: Seat,
+        up_card: Card,
         hand: &'a [Card],
         contract: Option<Contract>,
         trick: &'a Trick,
@@ -600,14 +602,20 @@ mod tests {
     ) -> GameView<'a> {
         GameView {
             seat,
-            dealer,
+            up_card,
             hand,
             contract,
+            discarded: None,
             current_trick: trick,
             completed_tricks: completed,
             scores: Scores::default(),
             rules: GameRules::default(),
         }
+    }
+
+    /// A filler up-card for views where bidding does not read it.
+    fn up() -> Card {
+        card(Rank::Queen, Suit::Spades)
     }
 
     /// Every card across the four reconstructed hands is distinct, and my own hand
@@ -632,17 +640,17 @@ mod tests {
         ];
         let empty = Trick::new();
         let view = make_view(
-            Seat::North,
-            Seat::West,
+            Seat::First,
+            up(),
             &hand,
-            Some(contract(Suit::Spades, Seat::East, false)),
+            Some(contract(Suit::Spades, Seat::Second, false)),
             &empty,
             &[],
         );
         let mut agent = MonteCarloAgent::with_seed(1);
         for _ in 0..50 {
             let world = agent.determinize(&view, Suit::Spades);
-            for s in [Seat::East, Seat::South, Seat::West] {
+            for s in [Seat::Second, Seat::Third, Seat::Dealer] {
                 assert_eq!(world[seat_index(s)].len(), 5);
             }
             assert_world_consistent(&world, &view);
@@ -651,22 +659,22 @@ mod tests {
 
     #[test]
     fn determinize_respects_a_revealed_void() {
-        // A completed trick: North led the nine of hearts, East ruffed with the
-        // right bower (so East is void in hearts), South and West followed.
+        // A completed trick: First led the nine of hearts, Second ruffed with the
+        // right bower (so Second is void in hearts), Third and Dealer followed.
         let mut done = Trick::new();
         for play in [
-            (Seat::North, card(Rank::Nine, Suit::Hearts)),
-            (Seat::East, card(Rank::Jack, Suit::Spades)),
-            (Seat::South, card(Rank::Ten, Suit::Hearts)),
-            (Seat::West, card(Rank::King, Suit::Hearts)),
+            (Seat::First, card(Rank::Nine, Suit::Hearts)),
+            (Seat::Second, card(Rank::Jack, Suit::Spades)),
+            (Seat::Third, card(Rank::Ten, Suit::Hearts)),
+            (Seat::Dealer, card(Rank::King, Suit::Hearts)),
         ] {
             done.push(Play {
                 seat: play.0,
                 card: play.1,
             });
         }
-        let completed = [(done, Seat::East)];
-        // North's four remaining cards, none of them hearts (those are in play).
+        let completed = [(done, Seat::Second)];
+        // First's four remaining cards, none of them hearts (those are in play).
         let hand = [
             card(Rank::Ace, Suit::Spades),
             card(Rank::King, Suit::Spades),
@@ -675,21 +683,21 @@ mod tests {
         ];
         let empty = Trick::new();
         let view = make_view(
-            Seat::North,
-            Seat::West,
+            Seat::First,
+            up(),
             &hand,
-            Some(contract(Suit::Spades, Seat::East, false)),
+            Some(contract(Suit::Spades, Seat::Second, false)),
             &empty,
             &completed,
         );
         let mut agent = MonteCarloAgent::with_seed(7);
         for _ in 0..200 {
             let world = agent.determinize(&view, Suit::Spades);
-            for c in &world[seat_index(Seat::East)] {
+            for c in &world[seat_index(Seat::Second)] {
                 assert_ne!(
                     c.effective_suit(Suit::Spades),
                     Suit::Hearts,
-                    "East was dealt a heart despite being void"
+                    "Second was dealt a heart despite being void"
                 );
             }
             assert_world_consistent(&world, &view);
@@ -706,21 +714,21 @@ mod tests {
             card(Rank::Ace, Suit::Clubs),
         ];
         let empty = Trick::new();
-        // East goes alone; East's partner West sits out.
+        // Second goes alone; Second's partner (Dealer) sits out.
         let view = make_view(
-            Seat::North,
-            Seat::West,
+            Seat::First,
+            up(),
             &hand,
-            Some(contract(Suit::Spades, Seat::East, true)),
+            Some(contract(Suit::Spades, Seat::Second, true)),
             &empty,
             &[],
         );
         let mut agent = MonteCarloAgent::with_seed(3);
         for _ in 0..50 {
             let world = agent.determinize(&view, Suit::Spades);
-            assert!(world[seat_index(Seat::West)].is_empty());
-            assert_eq!(world[seat_index(Seat::East)].len(), 5);
-            assert_eq!(world[seat_index(Seat::South)].len(), 5);
+            assert!(world[seat_index(Seat::Dealer)].is_empty());
+            assert_eq!(world[seat_index(Seat::Second)].len(), 5);
+            assert_eq!(world[seat_index(Seat::Third)].len(), 5);
             assert_world_consistent(&world, &view);
         }
     }
@@ -731,10 +739,10 @@ mod tests {
         let hand = [only];
         let empty = Trick::new();
         let view = make_view(
-            Seat::North,
-            Seat::West,
+            Seat::First,
+            up(),
             &hand,
-            Some(contract(Suit::Spades, Seat::East, false)),
+            Some(contract(Suit::Spades, Seat::Second, false)),
             &empty,
             &[],
         );
@@ -756,10 +764,10 @@ mod tests {
         ];
         let empty = Trick::new();
         let view = make_view(
-            Seat::South,
-            Seat::North,
+            Seat::Second,
+            up(),
             &hand,
-            Some(contract(Suit::Spades, Seat::South, false)),
+            Some(contract(Suit::Spades, Seat::Second, false)),
             &empty,
             &[],
         );
@@ -770,12 +778,13 @@ mod tests {
 
     #[test]
     fn my_team_score_matches_engine_scoring() {
-        // Maker is North/South; viewed from North (a maker) and East (a defender).
-        assert_eq!(my_team_score(5, Team::NorthSouth, true, Seat::North), 4); // alone march
-        assert_eq!(my_team_score(5, Team::NorthSouth, false, Seat::North), 2); // march
-        assert_eq!(my_team_score(3, Team::NorthSouth, false, Seat::North), 1); // bare make
-        assert_eq!(my_team_score(2, Team::NorthSouth, false, Seat::North), -2); // euchred
-        assert_eq!(my_team_score(2, Team::NorthSouth, false, Seat::East), 2); // euchred, defender
+        // Maker is team 0 (First/Third); viewed from First (a maker) and Second
+        // (a defender).
+        assert_eq!(my_team_score(5, 0, true, Seat::First), 4); // alone march
+        assert_eq!(my_team_score(5, 0, false, Seat::First), 2); // march
+        assert_eq!(my_team_score(3, 0, false, Seat::First), 1); // bare make
+        assert_eq!(my_team_score(2, 0, false, Seat::First), -2); // euchred
+        assert_eq!(my_team_score(2, 0, false, Seat::Second), 2); // euchred, defender
     }
 
     // --- Bidding -------------------------------------------------------------
@@ -794,16 +803,16 @@ mod tests {
     fn determinize_bid_round1_deals_a_full_table() {
         let hand = five();
         let empty = Trick::new();
-        let view = make_view(Seat::North, Seat::West, &hand, None, &empty, &[]);
-        let up = card(Rank::Queen, Suit::Spades); // not in hand
+        let view = make_view(Seat::First, up(), &hand, None, &empty, &[]);
+        let upc = card(Rank::Queen, Suit::Hearts); // not in hand
         let mut agent = MonteCarloAgent::with_seed(5);
         for _ in 0..50 {
-            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, false, Some(up));
-            for s in [Seat::East, Seat::South, Seat::West] {
+            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, false, Some(upc));
+            for s in [Seat::Second, Seat::Third, Seat::Dealer] {
                 assert_eq!(world[seat_index(s)].len(), 5);
             }
             assert_world_consistent(&world, &view);
-            assert_eq!(leader, Seat::North); // dealer West's left
+            assert_eq!(leader, Seat::First); // the dealer's left
         }
     }
 
@@ -811,18 +820,18 @@ mod tests {
     fn determinize_bid_alone_sits_the_partner_out() {
         let hand = five();
         let empty = Trick::new();
-        // East deals; North goes alone, so South (North's partner) sits out and the
-        // lead, normally South, skips to West.
-        let view = make_view(Seat::North, Seat::East, &hand, None, &empty, &[]);
-        let up = card(Rank::Queen, Suit::Spades);
+        // We (Third) go alone, so our partner (First) sits out and the lead,
+        // normally First (the dealer's left), skips to Second.
+        let view = make_view(Seat::Third, up(), &hand, None, &empty, &[]);
+        let upc = card(Rank::Queen, Suit::Hearts);
         let mut agent = MonteCarloAgent::with_seed(6);
         for _ in 0..50 {
-            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, true, Some(up));
-            assert!(world[seat_index(Seat::South)].is_empty());
-            assert_eq!(world[seat_index(Seat::East)].len(), 5);
-            assert_eq!(world[seat_index(Seat::West)].len(), 5);
+            let (world, leader) = agent.determinize_bid(&view, Suit::Spades, true, Some(upc));
+            assert!(world[seat_index(Seat::First)].is_empty());
+            assert_eq!(world[seat_index(Seat::Dealer)].len(), 5);
+            assert_eq!(world[seat_index(Seat::Second)].len(), 5);
             assert_world_consistent(&world, &view);
-            assert_eq!(leader, Seat::West);
+            assert_eq!(leader, Seat::Second);
         }
     }
 
@@ -830,14 +839,14 @@ mod tests {
     fn determinize_bid_round2_has_no_pickup() {
         let hand = five();
         let empty = Trick::new();
-        let view = make_view(Seat::North, Seat::West, &hand, None, &empty, &[]);
+        let view = make_view(Seat::First, up(), &hand, None, &empty, &[]);
         let mut agent = MonteCarloAgent::with_seed(7);
         let (world, leader) = agent.determinize_bid(&view, Suit::Hearts, false, None);
-        for s in [Seat::East, Seat::South, Seat::West] {
+        for s in [Seat::Second, Seat::Third, Seat::Dealer] {
             assert_eq!(world[seat_index(s)].len(), 5);
         }
         assert_world_consistent(&world, &view);
-        assert_eq!(leader, Seat::North);
+        assert_eq!(leader, Seat::First);
     }
 
     #[test]
@@ -852,12 +861,16 @@ mod tests {
             card(Rank::Nine, Suit::Clubs),
         ];
         let empty = Trick::new();
-        let view = make_view(Seat::North, Seat::West, &junk, None, &empty, &[]);
-        let mut agent = MonteCarloAgent::with_seed(1).with_bid_determinizations(8);
-        assert_eq!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::Pass
+        let view = make_view(
+            Seat::First,
+            card(Rank::Nine, Suit::Spades),
+            &junk,
+            None,
+            &empty,
+            &[],
         );
+        let mut agent = MonteCarloAgent::with_seed(1).with_bid_determinizations(8);
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::Pass);
     }
 
     #[test]
@@ -870,12 +883,16 @@ mod tests {
             card(Rank::Ace, Suit::Hearts),
         ];
         let empty = Trick::new();
-        let view = make_view(Seat::North, Seat::West, &monster, None, &empty, &[]);
+        let view = make_view(
+            Seat::First,
+            card(Rank::Nine, Suit::Spades),
+            &monster,
+            None,
+            &empty,
+            &[],
+        );
         let mut agent = MonteCarloAgent::with_seed(2).with_bid_determinizations(8);
-        assert!(matches!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::OrderUp(_)
-        ));
+        assert!(matches!(agent.bid_upcard(&view), UpcardBid::OrderUp { .. }));
     }
 
     #[test]
@@ -891,10 +908,11 @@ mod tests {
         ];
         let empty = Trick::new();
         let view = GameView {
-            seat: Seat::North,
-            dealer: Seat::North,
+            seat: Seat::Dealer,
+            up_card: card(Rank::Nine, Suit::Spades),
             hand: &junk,
             contract: None,
+            discarded: None,
             current_trick: &empty,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -903,9 +921,6 @@ mod tests {
             },
         };
         let mut agent = MonteCarloAgent::with_seed(3).with_bid_determinizations(8);
-        assert!(matches!(
-            agent.bid_call(&view, Suit::Spades),
-            CallBid::Call { .. }
-        ));
+        assert!(matches!(agent.bid_call(&view), CallBid::Call { .. }));
     }
 }

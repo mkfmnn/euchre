@@ -22,11 +22,11 @@
 //!
 //! ```no_run
 //! use euchre_engine::{Driver, GameConfig, Player, Verbosity};
-//! # use euchre_interface::{Agent, Card, CallBid, GameView, Suit, UpcardBid};
+//! # use euchre_interface::{Agent, Card, CallBid, GameView, UpcardBid};
 //! # struct MyBot;
 //! # impl Agent for MyBot {
-//! #     fn bid_upcard(&mut self, _v: &GameView<'_>, _c: Card) -> UpcardBid { UpcardBid::Pass }
-//! #     fn bid_call(&mut self, _v: &GameView<'_>, t: Suit) -> CallBid { CallBid::Pass }
+//! #     fn bid_upcard(&mut self, _v: &GameView<'_>) -> UpcardBid { UpcardBid::Pass }
+//! #     fn bid_call(&mut self, _v: &GameView<'_>) -> CallBid { CallBid::Pass }
 //! #     fn discard(&mut self, v: &GameView<'_>) -> Card { v.hand[0] }
 //! #     fn play_card(&mut self, _v: &GameView<'_>, legal: &[Card]) -> Card { legal[0] }
 //! # }
@@ -81,4 +81,4 @@ pub use shuffle::deal;
 // is available as `euchre_engine::interface`, with the most common types lifted
 // to the top level for convenience.
 pub use euchre_interface as interface;
-pub use euchre_interface::{Agent, Card, GameRules, GameView, Scores, Seat, Suit, Team};
+pub use euchre_interface::{Agent, Card, GameRules, GameView, Scores, Seat, Suit};

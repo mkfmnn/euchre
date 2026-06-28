@@ -4,8 +4,8 @@
 //! connection's outbound [`ServerMsg`] channel to the socket, and the **reader**
 //! (this function) that deserializes incoming [`ClientMsg`]s and forwards them
 //! to the room as [`RoomMsg`]s. The first client message must be
-//! [`ClientMsg::Hello`]; once the room assigns a seat, every later message is
-//! tagged with it.
+//! [`ClientMsg::Hello`]; once the room assigns a table position, every later
+//! message is tagged with it.
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -39,9 +39,9 @@ async fn handle_socket(socket: WebSocket, room_tx: mpsc::UnboundedSender<RoomMsg
         }
     });
 
-    // Handshake: wait for HELLO and a seat assignment.
-    let seat = match handshake(&mut stream, &room_tx, &out_tx).await {
-        Some(seat) => seat,
+    // Handshake: wait for HELLO and a table-position assignment.
+    let player = match handshake(&mut stream, &room_tx, &out_tx).await {
+        Some(player) => player,
         None => {
             writer.abort();
             return;
@@ -53,7 +53,7 @@ async fn handle_socket(socket: WebSocket, room_tx: mpsc::UnboundedSender<RoomMsg
         match item {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(msg) => {
-                    if room_tx.send(RoomMsg::Action { seat, msg }).is_err() {
+                    if room_tx.send(RoomMsg::Action { player, msg }).is_err() {
                         break; // room is gone
                     }
                 }
@@ -69,17 +69,17 @@ async fn handle_socket(socket: WebSocket, room_tx: mpsc::UnboundedSender<RoomMsg
         }
     }
 
-    let _ = room_tx.send(RoomMsg::Disconnect { seat });
+    let _ = room_tx.send(RoomMsg::Disconnect { player });
     writer.abort();
 }
 
-/// Reads messages until a valid `HELLO` yields a seat, or the socket closes /
-/// the table is full (returns `None`).
+/// Reads messages until a valid `HELLO` yields a table position, or the socket
+/// closes / the table is full (returns `None`).
 async fn handshake(
     stream: &mut futures_util::stream::SplitStream<WebSocket>,
     room_tx: &mpsc::UnboundedSender<RoomMsg>,
     out_tx: &mpsc::UnboundedSender<ServerMsg>,
-) -> Option<euchre_interface::Seat> {
+) -> Option<crate::protocol::Player> {
     while let Some(item) = stream.next().await {
         let text = match item {
             Ok(Message::Text(text)) => text,

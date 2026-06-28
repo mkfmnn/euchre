@@ -1,71 +1,66 @@
-//! Seats, teams, and the observable game state passed to an [`Agent`].
+//! Seats and the observable game state passed to an [`Agent`].
 //!
 //! [`Agent`]: crate::agent::Agent
 
 use crate::card::{Card, Suit};
 
-/// One of the four seats at the table, arranged clockwise.
+/// One of the four seats at the table, named by its position *relative to the
+/// dealer*.
 ///
-/// Seats `North`/`South` form one team and `East`/`West` form the other, so
-/// partners sit across from each other.
+/// `Dealer` dealt the hand; `First` (the seat to the dealer's immediate left) is
+/// first to bid and first to lead, then `Second` and `Third` follow clockwise.
+/// Because the deal rotates each hand, these labels are relative — the same
+/// physical player occupies a different `Seat` from one hand to the next. The
+/// engine and other fixed-identity consumers track players by a separate index;
+/// an [`Agent`] only ever reasons in these dealer-relative terms.
+///
+/// Partners sit across the table, so `First`/`Third` are one team and
+/// `Second`/`Dealer` the other.
+///
+/// [`Agent`]: crate::agent::Agent
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Seat {
-    North,
-    East,
-    South,
-    West,
+    First,
+    Second,
+    Third,
+    Dealer,
 }
 
 impl Seat {
-    /// All four seats in clockwise order starting from `North`.
-    pub const ALL: [Seat; 4] = [Seat::North, Seat::East, Seat::South, Seat::West];
+    /// All four seats in bidding order, from the dealer's left around to the
+    /// dealer.
+    pub const ALL: [Seat; 4] = [Seat::First, Seat::Second, Seat::Third, Seat::Dealer];
 
     /// The seat to the immediate left (the next seat clockwise), which is the
     /// next to act or play.
     pub const fn next(self) -> Seat {
         match self {
-            Seat::North => Seat::East,
-            Seat::East => Seat::South,
-            Seat::South => Seat::West,
-            Seat::West => Seat::North,
+            Seat::First => Seat::Second,
+            Seat::Second => Seat::Third,
+            Seat::Third => Seat::Dealer,
+            Seat::Dealer => Seat::First,
         }
     }
 
     /// This seat's partner, sitting directly across the table.
     pub const fn partner(self) -> Seat {
         match self {
-            Seat::North => Seat::South,
-            Seat::South => Seat::North,
-            Seat::East => Seat::West,
-            Seat::West => Seat::East,
+            Seat::First => Seat::Third,
+            Seat::Third => Seat::First,
+            Seat::Second => Seat::Dealer,
+            Seat::Dealer => Seat::Second,
         }
     }
 
-    /// The team this seat belongs to.
-    pub const fn team(self) -> Team {
-        match self {
-            Seat::North | Seat::South => Team::NorthSouth,
-            Seat::East | Seat::West => Team::EastWest,
-        }
-    }
-}
-
-/// One of the two partnerships.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Team {
-    NorthSouth,
-    EastWest,
-}
-
-impl Team {
-    /// The opposing team.
-    pub const fn opponent(self) -> Team {
-        match self {
-            Team::NorthSouth => Team::EastWest,
-            Team::EastWest => Team::NorthSouth,
-        }
+    /// Whether `other` is on this seat's team — either this very seat or its
+    /// partner across the table.
+    pub const fn same_team(self, other: Seat) -> bool {
+        matches!(
+            (self, other),
+            (Seat::First | Seat::Third, Seat::First | Seat::Third)
+                | (Seat::Second | Seat::Dealer, Seat::Second | Seat::Dealer)
+        )
     }
 }
 
@@ -180,20 +175,23 @@ pub struct GameRules {
 pub struct GameView<'a> {
     /// The seat this agent occupies.
     pub seat: Seat,
-    /// The seat that dealt this hand.
-    pub dealer: Seat,
+    /// The card turned up for bidding by the dealer at the end of the deal.
+    pub up_card: Card,
     /// The cards currently in the agent's hand.
     pub hand: &'a [Card],
     /// The agreed contract for this hand, once trump has been named.
     ///
     /// This is `None` during bidding, before a trump suit has been chosen.
     pub contract: Option<Contract>,
+    /// The card discarded by the dealer. This is only populated for the
+    /// dealer's view, and only if the dealer did discard.
+    pub discarded: Option<Card>,
     /// The trick currently in progress.
     pub current_trick: &'a Trick,
     /// Completed tricks this hand, oldest first, each paired with the seat that
     /// won it.
     pub completed_tricks: &'a [(Trick, Seat)],
-    /// Cumulative match score for each team.
+    /// Cumulative match score, from this seat's point of view.
     pub scores: Scores,
     /// The house rules in effect for this match.
     pub rules: GameRules,
@@ -206,22 +204,15 @@ impl GameView<'_> {
     }
 }
 
-/// Cumulative match scores for both teams.
+/// Cumulative match scores, told from one seat's point of view: `us` is the
+/// viewing seat's own team, `them` the opponents'.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scores {
-    pub north_south: u8,
-    pub east_west: u8,
-}
-
-impl Scores {
-    /// The score for a given team.
-    pub const fn for_team(&self, team: Team) -> u8 {
-        match team {
-            Team::NorthSouth => self.north_south,
-            Team::EastWest => self.east_west,
-        }
-    }
+    /// The viewing seat's own team's score.
+    pub us: u8,
+    /// The opposing team's score.
+    pub them: u8,
 }
 
 #[cfg(test)]
@@ -231,34 +222,36 @@ mod tests {
 
     #[test]
     fn seat_relationships() {
-        assert_eq!(Seat::North.next(), Seat::East);
-        assert_eq!(Seat::West.next(), Seat::North);
-        assert_eq!(Seat::North.partner(), Seat::South);
-        assert_eq!(Seat::East.team(), Team::EastWest);
-        assert_eq!(Seat::North.team().opponent(), Team::EastWest);
+        assert_eq!(Seat::First.next(), Seat::Second);
+        assert_eq!(Seat::Dealer.next(), Seat::First);
+        assert_eq!(Seat::First.partner(), Seat::Third);
+        assert!(Seat::First.same_team(Seat::Third));
+        assert!(Seat::Second.same_team(Seat::Dealer));
+        assert!(!Seat::First.same_team(Seat::Second));
+        assert!(!Seat::First.same_team(Seat::Dealer));
     }
 
     #[test]
     fn trick_winner_accounts_for_trump() {
         let trump = Suit::Spades;
         let mut trick = Trick::new();
-        // North leads the ace of hearts.
+        // First leads the ace of hearts.
         trick.push(Play {
-            seat: Seat::North,
+            seat: Seat::First,
             card: Card::new(Rank::Ace, Suit::Hearts),
         });
-        // East follows with a heart.
+        // Second follows with a heart.
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: Card::new(Rank::King, Suit::Hearts),
         });
-        // South trumps in with the nine of spades.
+        // Third trumps in with the nine of spades.
         trick.push(Play {
-            seat: Seat::South,
+            seat: Seat::Third,
             card: Card::new(Rank::Nine, Suit::Spades),
         });
         assert_eq!(trick.led_suit(trump), Some(Suit::Hearts));
-        assert_eq!(trick.winner(trump), Some(Seat::South));
+        assert_eq!(trick.winner(trump), Some(Seat::Third));
     }
 
     #[test]
@@ -266,7 +259,7 @@ mod tests {
         let trump = Suit::Spades;
         let mut trick = Trick::new();
         trick.push(Play {
-            seat: Seat::North,
+            seat: Seat::First,
             card: Card::new(Rank::Jack, Suit::Clubs), // left bower
         });
         assert_eq!(trick.led_suit(trump), Some(Suit::Spades));
@@ -276,9 +269,9 @@ mod tests {
     fn going_alone_seats_out_partner() {
         let contract = Contract {
             trump: Suit::Hearts,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: true,
         };
-        assert_eq!(contract.sitting_out(), Some(Seat::South));
+        assert_eq!(contract.sitting_out(), Some(Seat::Third));
     }
 }

@@ -12,7 +12,7 @@
 //! montecarlo advanced --sprt`.
 
 use euchre_agents::{AdvancedAgent, MonteCarloAgent, RandomAgent};
-use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
+use euchre_engine::{Driver, GameConfig, Player, Verbosity};
 use euchre_interface::Agent;
 
 /// Determinizations per play in the tests — small, to keep the suite quick while
@@ -32,7 +32,7 @@ fn play_match(
     seed: u64,
     mut ns: impl FnMut() -> Box<dyn Agent>,
     mut ew: impl FnMut() -> Box<dyn Agent>,
-) -> Team {
+) -> usize {
     let mut north = ns();
     let mut south = ns();
     let mut east = ew();
@@ -83,12 +83,12 @@ fn montecarlo_wins_in_pair(seed: u64) -> u32 {
     let base = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let as_ns = play_match(seed, montecarlo_side(base), || {
         Box::new(AdvancedAgent::new())
-    }) == Team::NorthSouth;
+    }) == 0;
     let as_ew = play_match(
         seed,
         || Box::new(AdvancedAgent::new()),
         montecarlo_side(base ^ 0xFFFF_FFFF),
-    ) == Team::EastWest;
+    ) == 1;
     u32::from(as_ns) + u32::from(as_ew)
 }
 
@@ -105,7 +105,7 @@ fn montecarlo_team_dominates_random_team() {
                     montecarlo(seed as u64 * 1000 + counter)
                 },
                 || Box::new(RandomAgent::with_seed(seed as u64 ^ 0xA1CE)),
-            ) == Team::NorthSouth
+            ) == 0
         })
         .count();
 
@@ -169,5 +169,5 @@ fn a_full_montecarlo_table_completes() {
     )
     .run()
     .expect("a headless match never fails on I/O");
-    assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+    assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
 }

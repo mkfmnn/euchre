@@ -25,7 +25,7 @@
 //! best *legal* card. Legality is expressed as a bitmask so the same masking
 //! works for training (masked softmax) and inference (masked arg-max).
 
-use euchre_interface::{Bid, CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
+use euchre_interface::{CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
 
 /// The four decision points, each backed by its own policy network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,8 +256,8 @@ fn push_onehot(out: &mut Vec<f32>, n: usize, index: usize) {
 /// Appends the four score features: own and opponent scores (scaled by the
 /// target) and "on the hill" flags for each side being one hand from the win.
 fn push_score(out: &mut Vec<f32>, view: &GameView<'_>) {
-    let me = view.scores.for_team(view.seat.team()) as f32;
-    let them = view.scores.for_team(view.seat.team().opponent()) as f32;
+    let me = view.scores.us as f32;
+    let them = view.scores.them as f32;
     out.push(me / TARGET_SCORE);
     out.push(them / TARGET_SCORE);
     out.push(if me + 1.0 >= TARGET_SCORE { 1.0 } else { 0.0 });
@@ -291,10 +291,10 @@ fn played_and_voids(view: &GameView<'_>, trump: Suit) -> ([bool; 24], [[bool; 4]
 
 fn seat_idx(seat: Seat) -> usize {
     match seat {
-        Seat::North => 0,
-        Seat::East => 1,
-        Seat::South => 2,
-        Seat::West => 3,
+        Seat::First => 0,
+        Seat::Second => 1,
+        Seat::Third => 2,
+        Seat::Dealer => 3,
     }
 }
 
@@ -302,12 +302,13 @@ fn seat_idx(seat: Seat) -> usize {
 
 /// Features for the first-round up-card bid. The candidate trump is the
 /// up-card's suit.
-pub fn upcard_features(view: &GameView<'_>, up_card: Card) -> Vec<f32> {
+pub fn upcard_features(view: &GameView<'_>) -> Vec<f32> {
+    let up_card = view.up_card;
     let trump = up_card.suit;
     let mut out = Vec::with_capacity(UPCARD_IN);
     push_hand(&mut out, view.hand, trump);
     push_card(&mut out, up_card, trump);
-    let rd = rel_seat(view.seat, view.dealer);
+    let rd = rel_seat(view.seat, Seat::Dealer);
     push_onehot(&mut out, 4, rd);
     out.push(if rd == 0 { 1.0 } else { 0.0 }); // I am the dealer
     out.push(if rd == 2 { 1.0 } else { 0.0 }); // the dealer is my partner
@@ -326,7 +327,7 @@ pub fn call_features(view: &GameView<'_>, turned_down: Suit, stuck: bool) -> Vec
     for &suit in &call_candidates(turned_down) {
         push_hand(&mut out, view.hand, suit);
     }
-    let rd = rel_seat(view.seat, view.dealer);
+    let rd = rel_seat(view.seat, Seat::Dealer);
     push_onehot(&mut out, 4, rd);
     out.push(if rd == 0 { 1.0 } else { 0.0 });
     out.push(if rd == 2 { 1.0 } else { 0.0 });
@@ -403,7 +404,7 @@ pub fn play_features(view: &GameView<'_>) -> Vec<f32> {
     // The contract, from my point of view.
     push_onehot(&mut out, 4, rel_seat(me, contract.maker));
     out.push(if contract.alone { 1.0 } else { 0.0 });
-    out.push(if contract.maker.team() == me.team() {
+    out.push(if me.same_team(contract.maker) {
         1.0
     } else {
         0.0
@@ -455,8 +456,8 @@ pub fn upcard_legal() -> u32 {
 pub fn upcard_class(bid: UpcardBid) -> usize {
     match bid {
         UpcardBid::Pass => 0,
-        UpcardBid::OrderUp(Bid::WithPartner) => 1,
-        UpcardBid::OrderUp(Bid::Alone) => 2,
+        UpcardBid::OrderUp { alone: false } => 1,
+        UpcardBid::OrderUp { alone: true } => 2,
     }
 }
 
@@ -464,8 +465,8 @@ pub fn upcard_class(bid: UpcardBid) -> usize {
 pub fn upcard_action(class: usize) -> UpcardBid {
     match class {
         0 => UpcardBid::Pass,
-        1 => UpcardBid::OrderUp(Bid::WithPartner),
-        2 => UpcardBid::OrderUp(Bid::Alone),
+        1 => UpcardBid::OrderUp { alone: false },
+        2 => UpcardBid::OrderUp { alone: true },
         _ => panic!("up-card class out of range: {class}"),
     }
 }
@@ -488,12 +489,12 @@ pub fn call_legal(stuck: bool) -> u32 {
 pub fn call_class(bid: CallBid, turned_down: Suit) -> usize {
     match bid {
         CallBid::Pass => 0,
-        CallBid::Call { suit, bid } => {
+        CallBid::Call { suit, alone } => {
             let ci = call_candidates(turned_down)
                 .iter()
                 .position(|&s| s == suit)
                 .expect("a called suit is one of the three candidates");
-            1 + ci * 2 + usize::from(bid.is_alone())
+            1 + ci * 2 + usize::from(alone)
         }
     }
 }
@@ -507,7 +508,7 @@ pub fn call_action(class: usize, turned_down: Suit) -> CallBid {
     let alone = (class - 1) % 2 == 1;
     CallBid::Call {
         suit: call_candidates(turned_down)[ci],
-        bid: if alone { Bid::Alone } else { Bid::WithPartner },
+        alone,
     }
 }
 
@@ -561,10 +562,11 @@ mod tests {
 
     fn view<'a>(hand: &'a [Card], trick: &'a Trick, contract: Option<Contract>) -> GameView<'a> {
         GameView {
-            seat: Seat::North,
-            dealer: Seat::West,
+            seat: Seat::First,
+            up_card: card(Rank::Nine, Suit::Spades),
             hand,
             contract,
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -583,15 +585,12 @@ mod tests {
         ];
         let trick = Trick::new();
         let bidding = view(&hand, &trick, None);
-        assert_eq!(
-            upcard_features(&bidding, card(Rank::Nine, Suit::Spades)).len(),
-            UPCARD_IN
-        );
+        assert_eq!(upcard_features(&bidding).len(), UPCARD_IN);
         assert_eq!(call_features(&bidding, Suit::Spades, false).len(), CALL_IN);
 
         let contract = Contract {
             trump: Suit::Spades,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: false,
         };
         let six = [
@@ -643,38 +642,39 @@ mod tests {
 
     #[test]
     fn play_features_flag_a_revealed_void() {
-        // East fails to follow North's heart lead, revealing East void in hearts.
+        // Second fails to follow First's heart lead, revealing Second void in hearts.
         let trump = Suit::Spades;
         let mut done = Trick::new();
         for (seat, c) in [
-            (Seat::North, card(Rank::Ace, Suit::Hearts)),
-            (Seat::East, card(Rank::Nine, Suit::Clubs)),
-            (Seat::South, card(Rank::King, Suit::Hearts)),
-            (Seat::West, card(Rank::Ten, Suit::Hearts)),
+            (Seat::First, card(Rank::Ace, Suit::Hearts)),
+            (Seat::Second, card(Rank::Nine, Suit::Clubs)),
+            (Seat::Third, card(Rank::King, Suit::Hearts)),
+            (Seat::Dealer, card(Rank::Ten, Suit::Hearts)),
         ] {
             done.push(Play { seat, card: c });
         }
-        let completed = [(done, Seat::South)];
+        let completed = [(done, Seat::Third)];
         let hand = [card(Rank::Jack, Suit::Spades)];
         let empty = Trick::new();
         let contract = Contract {
             trump,
-            maker: Seat::North,
+            maker: Seat::First,
             alone: false,
         };
         let v = GameView {
-            seat: Seat::North,
-            dealer: Seat::West,
+            seat: Seat::First,
+            up_card: card(Rank::Nine, Suit::Spades),
             hand: &hand,
             contract: Some(contract),
+            discarded: None,
             current_trick: &empty,
             completed_tricks: &completed,
             scores: Scores::default(),
             rules: GameRules::default(),
         };
         let (_seen, void) = played_and_voids(&v, trump);
-        // East is North's left (relative 1); hearts is the "next" suit (relative 1)
-        // since trump is spades.
-        assert!(void[seat_idx(Seat::East)][rel_of_suit(Suit::Hearts, trump)]);
+        // Second is First's left (relative 1); hearts is the "next" suit (relative
+        // 1) since trump is spades.
+        assert!(void[seat_idx(Seat::Second)][rel_of_suit(Suit::Hearts, trump)]);
     }
 }

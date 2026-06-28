@@ -29,7 +29,7 @@ use euchre_agents::neural::features::{
 };
 use euchre_agents::neural::{Head, NeuralModel, Sample, TrainConfig, train};
 use euchre_agents::{AdvancedAgent, HeuristicAgent, MonteCarloAgent, NeuralAgent, RandomAgent};
-use euchre_engine::{Action, Decision, Driver, Game, GameConfig, Player, Team, Verbosity, deal};
+use euchre_engine::{Action, Decision, Driver, Game, GameConfig, Player, Verbosity, deal};
 use euchre_interface::{Agent, Seat};
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
@@ -90,10 +90,10 @@ fn collect(opts: &Options) -> Vec<Sample> {
         let mut game = Game::new(config, deal(&mut deck_rng));
         loop {
             match game.next_action() {
-                Action::BidUpcard { seat, up_card } => {
+                Action::BidUpcard { seat, .. } => {
                     let view = game.view(seat);
-                    let feats = upcard_features(&view, up_card);
-                    let action = agents[idx(seat)].bid_upcard(&view, up_card);
+                    let feats = upcard_features(&view);
+                    let action = agents[game.player_at(seat)].bid_upcard(&view);
                     samples.push(Sample {
                         head: Head::Upcard,
                         features: feats,
@@ -110,7 +110,7 @@ fn collect(opts: &Options) -> Vec<Sample> {
                     let stuck = !may_pass;
                     let view = game.view(seat);
                     let feats = call_features(&view, turned_down, stuck);
-                    let action = agents[idx(seat)].bid_call(&view, turned_down);
+                    let action = agents[game.player_at(seat)].bid_call(&view);
                     samples.push(Sample {
                         head: Head::Call,
                         features: feats,
@@ -123,7 +123,7 @@ fn collect(opts: &Options) -> Vec<Sample> {
                     let view = game.view(seat);
                     let trump = view.trump().expect("trump set at discard");
                     let feats = discard_features(&view);
-                    let card = agents[idx(seat)].discard(&view);
+                    let card = agents[game.player_at(seat)].discard(&view);
                     samples.push(Sample {
                         head: Head::Discard,
                         features: feats,
@@ -136,7 +136,7 @@ fn collect(opts: &Options) -> Vec<Sample> {
                     let view = game.view(seat);
                     let trump = view.trump().expect("trump set at play");
                     let feats = play_features(&view);
-                    let card = agents[idx(seat)].play_card(&view, &legal);
+                    let card = agents[game.player_at(seat)].play_card(&view, &legal);
                     samples.push(Sample {
                         head: Head::Play,
                         features: feats,
@@ -153,10 +153,11 @@ fn collect(opts: &Options) -> Vec<Sample> {
                     };
                     game.apply(Decision::Play(played)).expect("legal play");
                 }
-                Action::HandComplete { result, .. } => {
+                Action::HandComplete { .. } => {
                     for seat in Seat::ALL {
                         let view = game.view(seat);
-                        agents[idx(seat)].observe_hand_end(&view, &result);
+                        let result = game.hand_result(seat);
+                        agents[game.player_at(seat)].observe_hand_end(&view, &result);
                     }
                     if game.is_over() {
                         break;
@@ -227,10 +228,10 @@ fn evaluate(model: Arc<NeuralModel>) {
 fn head_to_head(model: &Arc<NeuralModel>, opp: &str, pairs: u64) -> u64 {
     let mut wins = 0;
     for seed in 0..pairs {
-        if play(model, opp, seed, true) == Team::NorthSouth {
+        if play(model, opp, seed, true) == 0 {
             wins += 1;
         }
-        if play(model, opp, seed, false) == Team::EastWest {
+        if play(model, opp, seed, false) == 1 {
             wins += 1;
         }
     }
@@ -238,7 +239,8 @@ fn head_to_head(model: &Arc<NeuralModel>, opp: &str, pairs: u64) -> u64 {
 }
 
 /// One match: the neural agent on North/South when `nn_ns`, else East/West.
-fn play(model: &Arc<NeuralModel>, opp: &str, seed: u64, nn_ns: bool) -> Team {
+/// Returns the winning team index (0 = North/South, 1 = East/West).
+fn play(model: &Arc<NeuralModel>, opp: &str, seed: u64, nn_ns: bool) -> usize {
     let nn = || Box::new(NeuralAgent::from_shared(model.clone())) as Box<dyn Agent>;
     let other = || make_agent(opp, seed ^ 0xA1CE);
     let (mut north, mut east, mut south, mut west) = if nn_ns {
@@ -263,13 +265,6 @@ fn play(model: &Arc<NeuralModel>, opp: &str, seed: u64, nn_ns: bool) -> Team {
     .run()
     .expect("headless match never fails on I/O")
     .winner
-}
-
-fn idx(seat: Seat) -> usize {
-    Seat::ALL
-        .iter()
-        .position(|&s| s == seat)
-        .expect("seat in ALL")
 }
 
 fn head_name(head: Head) -> &'static str {

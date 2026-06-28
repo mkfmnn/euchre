@@ -15,7 +15,8 @@
 //!
 //! If a seat orders up the turned card, the dealer takes it into hand and
 //! [discards](Agent::discard) one card. The seat that fixes trump (in either
-//! round) may choose to play [alone](Bid::alone).
+//! round) may choose to play *alone* (its `alone` flag), sitting its partner out
+//! for a chance at a larger bonus.
 //!
 //! ## Play
 //!
@@ -34,7 +35,7 @@ pub enum UpcardBid {
     /// Decline to make the up-card's suit trump and let the auction continue.
     Pass,
     /// Order up the up-card's suit as trump.
-    OrderUp(Bid),
+    OrderUp { alone: bool },
 }
 
 /// An agent's choice in the second round of bidding, when it may name a suit.
@@ -47,25 +48,7 @@ pub enum CallBid {
     ///
     /// The suit of the (now turned-down) up-card may not be chosen; the engine
     /// rejects an attempt to call it.
-    Call { suit: Suit, bid: Bid },
-}
-
-/// Whether the maker plays with or without their partner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Bid {
-    /// Play normally, with the partner participating.
-    WithPartner,
-    /// Play alone: the partner sits out the hand and the maker plays all five
-    /// tricks solo for a chance at a larger bonus.
-    Alone,
-}
-
-impl Bid {
-    /// Whether this bid commits the maker to playing alone.
-    pub const fn is_alone(self) -> bool {
-        matches!(self, Bid::Alone)
-    }
+    Call { suit: Suit, alone: bool },
 }
 
 /// The strategy an AI bot implements to play Euchre.
@@ -80,22 +63,22 @@ impl Bid {
 /// models). The engine guarantees that calls for a single agent are made
 /// sequentially, never concurrently.
 pub trait Agent {
-    /// First bidding round: decide whether to order up the turned `up_card`,
+    /// First bidding round: decide whether to order up the turned `view.up_card`,
     /// making its suit trump.
     ///
     /// `view.contract` is `None` at this point. Returning
-    /// [`UpcardBid::OrderUp`] fixes trump as `up_card.suit`.
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid;
+    /// [`UpcardBid::OrderUp`] fixes trump as `view.up_card.suit`.
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid;
 
     /// Second bidding round: decide whether to name a trump suit.
     ///
-    /// Reached only if every seat passed in the first round. `turned_down` is
-    /// the suit of the up-card that was rejected; it is not a legal choice.
+    /// Reached only if every seat passed in the first round.
+    /// `view.up_card.suit` is not a legal choice.
     ///
     /// In some house rules the dealer is forced to call rather than pass on
-    /// this round ("stick the dealer"); enforcing that is the engine's job, but
-    /// agents may inspect `view` to detect when it applies to them.
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid;
+    /// this round ("stick the dealer"); agents should inspect `view` to
+    /// determine if it applies to them.
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid;
 
     /// Choose which card to discard after, as dealer, picking up the ordered-up
     /// card.
@@ -138,18 +121,24 @@ pub enum HandResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HandScore {
-    /// The team that named trump for this hand.
-    pub makers: crate::game::Team,
     /// Tricks won by the makers (0..=5).
     pub maker_tricks: u8,
-    /// Whether the makers were *euchred* (failed to win at least three tricks).
-    pub euchred: bool,
+    /// Net points awarded to the agent's team;
+    /// negative if the other team earned points.
+    pub points_awarded: i8,
+}
+
+impl HandScore {
+    /// Whether the makers were *euchred* — they failed to win at least three of
+    /// the five tricks, so the defenders scored.
+    pub const fn euchred(self) -> bool {
+        self.maker_tricks < 3
+    }
+
     /// Whether the makers swept all five tricks (a *march*).
-    pub march: bool,
-    /// Whether the hand was played alone.
-    pub alone: bool,
-    /// Points awarded for the hand, and to which team.
-    pub points_awarded: (crate::game::Team, u8),
+    pub const fn march(self) -> bool {
+        self.maker_tricks == 5
+    }
 }
 
 #[cfg(test)]
@@ -162,17 +151,15 @@ mod tests {
     struct FirstLegalAgent;
 
     impl Agent for FirstLegalAgent {
-        fn bid_upcard(&mut self, _view: &GameView<'_>, _up_card: Card) -> UpcardBid {
+        fn bid_upcard(&mut self, _view: &GameView<'_>) -> UpcardBid {
             UpcardBid::Pass
         }
 
-        fn bid_call(&mut self, _view: &GameView<'_>, turned_down: Suit) -> CallBid {
-            // Name the first suit that is not the turned-down one.
+        fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+            // Name the first suit that is not the turned-down up-card's suit.
+            let turned_down = view.up_card.suit;
             let suit = Suit::ALL.into_iter().find(|&s| s != turned_down).unwrap();
-            CallBid::Call {
-                suit,
-                bid: Bid::WithPartner,
-            }
+            CallBid::Call { suit, alone: false }
         }
 
         fn discard(&mut self, view: &GameView<'_>) -> Card {
@@ -184,12 +171,13 @@ mod tests {
         }
     }
 
-    fn empty_view<'a>(hand: &'a [Card], trick: &'a Trick) -> GameView<'a> {
+    fn view_with_upcard<'a>(hand: &'a [Card], trick: &'a Trick, up_card: Card) -> GameView<'a> {
         GameView {
-            seat: Seat::North,
-            dealer: Seat::North,
+            seat: Seat::First,
+            up_card,
             hand,
             contract: None,
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -202,9 +190,9 @@ mod tests {
         let mut agent: Box<dyn Agent> = Box::new(FirstLegalAgent);
         let trick = Trick::new();
         let hand = [Card::new(Rank::Ace, Suit::Hearts)];
-        let view = empty_view(&hand, &trick);
         let up = Card::new(Rank::Nine, Suit::Spades);
-        assert_eq!(agent.bid_upcard(&view, up), UpcardBid::Pass);
+        let view = view_with_upcard(&hand, &trick, up);
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::Pass);
         assert_eq!(agent.play_card(&view, &hand), hand[0]);
     }
 
@@ -213,8 +201,9 @@ mod tests {
         let mut agent = FirstLegalAgent;
         let trick = Trick::new();
         let hand = [Card::new(Rank::Ace, Suit::Hearts)];
-        let view = empty_view(&hand, &trick);
-        match agent.bid_call(&view, Suit::Clubs) {
+        // Clubs is the up-card suit, so it must not be the named suit.
+        let view = view_with_upcard(&hand, &trick, Card::new(Rank::Nine, Suit::Clubs));
+        match agent.bid_call(&view) {
             CallBid::Call { suit, .. } => assert_ne!(suit, Suit::Clubs),
             CallBid::Pass => panic!("expected a call"),
         }

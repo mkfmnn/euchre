@@ -6,7 +6,7 @@
 //! useful as a baseline opponent, as a fuzz source for the engine, and as a
 //! sanity check that a smarter agent actually beats noise.
 
-use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Suit, UpcardBid};
+use euchre_interface::{Agent, CallBid, Card, GameView, Seat, Suit, UpcardBid};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
@@ -35,7 +35,7 @@ impl RandomAgent {
     /// Whether this seat is the dealer forced to name a suit under the
     /// "stick the dealer" rule, and so may not pass the second round.
     fn is_stuck(view: &GameView<'_>) -> bool {
-        view.rules.stick_the_dealer && view.seat == view.dealer
+        view.rules.stick_the_dealer && view.seat == Seat::Dealer
     }
 }
 
@@ -46,17 +46,18 @@ impl Default for RandomAgent {
 }
 
 impl Agent for RandomAgent {
-    fn bid_upcard(&mut self, _view: &GameView<'_>, _up_card: Card) -> UpcardBid {
+    fn bid_upcard(&mut self, _view: &GameView<'_>) -> UpcardBid {
         // The three legal answers: pass, order up with the partner, or alone.
         let options = [
             UpcardBid::Pass,
-            UpcardBid::OrderUp(Bid::WithPartner),
-            UpcardBid::OrderUp(Bid::Alone),
+            UpcardBid::OrderUp { alone: false },
+            UpcardBid::OrderUp { alone: true },
         ];
         *options.choose(&mut self.rng).expect("options is non-empty")
     }
 
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+        let turned_down = view.up_card.suit;
         // Every nameable suit, each with both bid styles, plus a pass when one
         // is allowed.
         let mut options = Vec::with_capacity(7);
@@ -67,14 +68,8 @@ impl Agent for RandomAgent {
             if suit == turned_down {
                 continue;
             }
-            options.push(CallBid::Call {
-                suit,
-                bid: Bid::WithPartner,
-            });
-            options.push(CallBid::Call {
-                suit,
-                bid: Bid::Alone,
-            });
+            options.push(CallBid::Call { suit, alone: false });
+            options.push(CallBid::Call { suit, alone: true });
         }
         *options.choose(&mut self.rng).expect("options is non-empty")
     }
@@ -97,14 +92,15 @@ mod tests {
         hand: &'a [Card],
         trick: &'a Trick,
         seat: Seat,
-        dealer: Seat,
+        up_card: Card,
         rules: GameRules,
     ) -> GameView<'a> {
         GameView {
             seat,
-            dealer,
+            up_card,
             hand,
             contract: None,
+            discarded: None,
             current_trick: trick,
             completed_tricks: &[],
             scores: Scores::default(),
@@ -124,8 +120,8 @@ mod tests {
         let view = view_for(
             &hand,
             &trick,
-            Seat::North,
-            Seat::North,
+            Seat::First,
+            Card::new(Rank::Jack, Suit::Spades),
             GameRules::default(),
         );
         for _ in 0..50 {
@@ -139,9 +135,16 @@ mod tests {
         let mut agent = RandomAgent::with_seed(99);
         let hand = [Card::new(Rank::Nine, Suit::Clubs)];
         let trick = Trick::new();
-        let view = view_for(&hand, &trick, Seat::East, Seat::North, GameRules::default());
+        // Diamonds is the up-card suit, so it is turned down in round two.
+        let view = view_for(
+            &hand,
+            &trick,
+            Seat::First,
+            Card::new(Rank::Nine, Suit::Diamonds),
+            GameRules::default(),
+        );
         for _ in 0..200 {
-            if let CallBid::Call { suit, .. } = agent.bid_call(&view, Suit::Diamonds) {
+            if let CallBid::Call { suit, .. } = agent.bid_call(&view) {
                 assert_ne!(suit, Suit::Diamonds);
             }
         }
@@ -156,12 +159,15 @@ mod tests {
             stick_the_dealer: true,
         };
         // The dealer, on the second round, is stuck and must name a suit.
-        let view = view_for(&hand, &trick, Seat::North, Seat::North, rules);
+        let view = view_for(
+            &hand,
+            &trick,
+            Seat::Dealer,
+            Card::new(Rank::Nine, Suit::Spades),
+            rules,
+        );
         for _ in 0..200 {
-            assert!(matches!(
-                agent.bid_call(&view, Suit::Spades),
-                CallBid::Call { .. }
-            ));
+            assert!(matches!(agent.bid_call(&view), CallBid::Call { .. }));
         }
     }
 }

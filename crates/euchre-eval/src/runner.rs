@@ -8,7 +8,7 @@
 //! configured target score), because score-aware play is only correct relative to
 //! that finish line — shortening matches would change optimal strategy.
 
-use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
+use euchre_engine::{Driver, GameConfig, Player, Verbosity};
 use euchre_interface::Agent;
 
 /// Builds a fresh agent for one seat, seeded for reproducibility.
@@ -49,7 +49,7 @@ fn seat_seed(match_seed: u64, salt: u64) -> u64 {
 }
 
 /// Plays one match, with `ns` seated North/South and `ew` seated East/West, and
-/// returns the winning team.
+/// returns the winning team index (0 = North/South, 1 = East/West).
 ///
 /// The two seeds are kept separate on purpose. `deck_seed` drives the shuffle and
 /// is held fixed across a duplicate pair so deal luck cancels; `agent_seed` drives
@@ -62,7 +62,7 @@ pub fn run_match(
     agent_seed: u64,
     ns: &AgentFactory,
     ew: &AgentFactory,
-) -> Team {
+) -> usize {
     let mut north = ns(seat_seed(agent_seed, 0));
     let mut east = ew(seat_seed(agent_seed, 1));
     let mut south = ns(seat_seed(agent_seed, 2));
@@ -120,8 +120,8 @@ impl PairResult {
 /// Both games use the same shuffled deck (so deal luck cancels) but independent
 /// agent-randomness seeds (so stochastic agents are sampled afresh each game).
 pub fn run_pair(config: GameConfig, seed: u64, a: &AgentFactory, b: &AgentFactory) -> PairResult {
-    let a_ns_won = run_match(config, seed, seat_seed(seed, 10), a, b) == Team::NorthSouth;
-    let b_ns_won = run_match(config, seed, seat_seed(seed, 11), b, a) == Team::NorthSouth;
+    let a_ns_won = run_match(config, seed, seat_seed(seed, 10), a, b) == 0;
+    let b_ns_won = run_match(config, seed, seat_seed(seed, 11), b, a) == 0;
     PairResult { a_ns_won, b_ns_won }
 }
 

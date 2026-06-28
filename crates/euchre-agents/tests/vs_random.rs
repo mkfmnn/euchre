@@ -6,11 +6,11 @@
 //! and these tests would catch it.
 
 use euchre_agents::{HeuristicAgent, RandomAgent};
-use euchre_engine::{Driver, GameConfig, Player, Team, Verbosity};
+use euchre_engine::{Driver, GameConfig, Player, Verbosity};
 
 /// Runs one match with the heuristic team (North/South) against the random team
 /// (East/West) for a given seed, returning the winning team.
-fn play_match(seed: u64) -> Team {
+fn play_match(seed: u64) -> usize {
     let mut north = HeuristicAgent::new();
     let mut south = HeuristicAgent::new();
     let mut east = RandomAgent::with_seed(seed ^ 0xE45);
@@ -38,7 +38,7 @@ fn play_match(seed: u64) -> Team {
 fn heuristic_team_dominates_random_team() {
     let matches: usize = 200;
     let heuristic_wins = (0..matches)
-        .filter(|&seed| play_match(seed as u64) == Team::NorthSouth)
+        .filter(|&seed| play_match(seed as u64) == 0)
         .count();
 
     // Random play is weak; the heuristic should win the lion's share. We assert
@@ -76,5 +76,5 @@ fn a_full_heuristic_table_completes() {
     )
     .run()
     .expect("a headless match never fails on I/O");
-    assert!(outcome.scores.for_team(outcome.winner) >= GameConfig::default().target_score);
+    assert!(outcome.scores[outcome.winner] >= GameConfig::default().target_score);
 }

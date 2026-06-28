@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use euchre_engine::GameConfig;
-use euchre_interface::{Card, Seat};
-use euchre_server::protocol::{ClientMsg, ServerMsg, TurnHint};
+use euchre_interface::Card;
+use euchre_server::protocol::{ClientMsg, Player, ServerMsg, TurnHint};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -30,19 +30,16 @@ async fn one_human_and_three_bots_play_a_full_match() {
 
     let (winner, ns, ew) = outcome;
     // The winner must actually have reached the target score.
-    let winning_score = match winner {
-        Seat::North | Seat::South => ns,
-        Seat::East | Seat::West => ew,
-    };
+    let winning_score = if winner == 0 { ns } else { ew };
     assert!(
         winning_score >= GameConfig::default().target_score,
-        "winner {winner:?} should have reached target (scores: N/S {ns}, E/W {ew})"
+        "winning team {winner} should have reached target (scores: N/S {ns}, E/W {ew})"
     );
 }
 
 /// Connects, plays a seat by always passing on bids and playing the first legal
-/// card, and returns `(a seat on the winning team, ns_score, ew_score)`.
-async fn play_a_match(addr: std::net::SocketAddr) -> (Seat, u8, u8) {
+/// card, and returns `(winning team index, ns_score, ew_score)`.
+async fn play_a_match(addr: std::net::SocketAddr) -> (u8, u8, u8) {
     let url = format!("ws://{addr}/ws");
     let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut tx, mut rx) = ws.split();
@@ -56,7 +53,7 @@ async fn play_a_match(addr: std::net::SocketAddr) -> (Seat, u8, u8) {
     )
     .await;
 
-    let mut my_seat: Option<Seat> = None;
+    let mut my_seat: Option<Player> = None;
     let mut hand: Vec<Card> = Vec::new();
 
     while let Some(item) = rx.next().await {
@@ -67,12 +64,8 @@ async fn play_a_match(addr: std::net::SocketAddr) -> (Seat, u8, u8) {
             ServerMsg::Joined { your_seat, .. } => my_seat = Some(your_seat),
             ServerMsg::Deal { hand: h, .. } => hand = h,
             ServerMsg::GameOver { winner, scores } => {
-                // winner is a Team; turn it into a representative seat.
-                let seat = match winner {
-                    euchre_interface::Team::NorthSouth => Seat::North,
-                    euchre_interface::Team::EastWest => Seat::East,
-                };
-                return (seat, scores.north_south, scores.east_west);
+                // winner is a fixed team index (0 = North/South, 1 = East/West).
+                return (winner, scores[0], scores[1]);
             }
             ServerMsg::Awaiting {
                 player,

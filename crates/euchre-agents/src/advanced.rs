@@ -30,7 +30,7 @@
 //!   the opponents are on the hill and plays safer when it is itself one hand
 //!   from winning.
 
-use euchre_interface::{Agent, Bid, CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
+use euchre_interface::{Agent, CallBid, Card, GameView, Rank, Seat, Suit, UpcardBid};
 
 // --- Bidding thresholds (in expected tricks) ---------------------------------
 
@@ -68,9 +68,10 @@ impl AdvancedAgent {
 }
 
 impl Agent for AdvancedAgent {
-    fn bid_upcard(&mut self, view: &GameView<'_>, up_card: Card) -> UpcardBid {
+    fn bid_upcard(&mut self, view: &GameView<'_>) -> UpcardBid {
+        let up_card = view.up_card;
         let trump = up_card.suit;
-        let pos = bidding_position(view.seat, view.dealer);
+        let pos = bidding_position(view.seat);
 
         // `solo` evaluates the hand as it would be played alone (the partner sits
         // out and never receives the up-card); `team` folds in the up-card going
@@ -98,8 +99,9 @@ impl Agent for AdvancedAgent {
         decide(view.hand, trump, solo + adjust, team + adjust)
     }
 
-    fn bid_call(&mut self, view: &GameView<'_>, turned_down: Suit) -> CallBid {
-        let on_dealer_team = view.dealer.team() == view.seat.team();
+    fn bid_call(&mut self, view: &GameView<'_>) -> CallBid {
+        let turned_down = view.up_card.suit;
+        let on_dealer_team = view.seat.same_team(Seat::Dealer);
         let next = turned_down.same_color();
 
         // Score every nameable suit, nudged by the next/green convention, and
@@ -132,13 +134,10 @@ impl Agent for AdvancedAgent {
         let team = score + adjust;
 
         match decide(view.hand, suit, solo, team) {
-            UpcardBid::OrderUp(bid) => CallBid::Call { suit, bid },
+            UpcardBid::OrderUp { alone } => CallBid::Call { suit, alone },
             UpcardBid::Pass if is_stuck(view) => {
                 // Forced to call: take the best suit even though it falls short.
-                CallBid::Call {
-                    suit,
-                    bid: Bid::WithPartner,
-                }
+                CallBid::Call { suit, alone: false }
             }
             UpcardBid::Pass => CallBid::Pass,
         }
@@ -195,9 +194,9 @@ impl Agent for AdvancedAgent {
 /// bar, otherwise pass.
 fn decide(hand: &[Card], trump: Suit, solo: f64, team: f64) -> UpcardBid {
     if solo >= ALONE_TRICKS && has_top_control(hand, trump) {
-        UpcardBid::OrderUp(Bid::Alone)
+        UpcardBid::OrderUp { alone: true }
     } else if team >= MAKE_TRICKS {
-        UpcardBid::OrderUp(Bid::WithPartner)
+        UpcardBid::OrderUp { alone: false }
     } else {
         UpcardBid::Pass
     }
@@ -220,34 +219,28 @@ enum BiddingPosition {
     Dealer,
 }
 
-/// Works out where `seat` sits in the bidding order behind `dealer`.
-fn bidding_position(seat: Seat, dealer: Seat) -> BiddingPosition {
-    let mut s = dealer;
-    for pos in [
-        BiddingPosition::Eldest,
-        BiddingPosition::DealerPartner,
-        BiddingPosition::Third,
-        BiddingPosition::Dealer,
-    ] {
-        s = s.next();
-        if s == seat {
-            return pos;
-        }
+/// Works out where `seat` sits in the bidding order — directly, since seats are
+/// already named relative to the dealer.
+fn bidding_position(seat: Seat) -> BiddingPosition {
+    match seat {
+        Seat::First => BiddingPosition::Eldest,
+        Seat::Second => BiddingPosition::DealerPartner,
+        Seat::Third => BiddingPosition::Third,
+        Seat::Dealer => BiddingPosition::Dealer,
     }
-    unreachable!("a seat is always reached within four steps of the dealer")
 }
 
 /// Whether this seat is the dealer forced to name a suit under "stick the
 /// dealer", and so may not pass the second round.
 fn is_stuck(view: &GameView<'_>) -> bool {
-    view.rules.stick_the_dealer && view.seat == view.dealer
+    view.rules.stick_the_dealer && view.seat == Seat::Dealer
 }
 
 /// A small swing to the bidding estimate based on the match score: press when
 /// the opponents are a hand from winning, relax when we are.
 fn score_adjust(view: &GameView<'_>) -> f64 {
-    let us = view.scores.for_team(view.seat.team());
-    let them = view.scores.for_team(view.seat.team().opponent());
+    let us = view.scores.us;
+    let them = view.scores.them;
     let target = 10; // The view does not carry the target; 10 is conventional.
     let mut adjust = 0.0;
     if them + 1 >= target {
@@ -513,9 +506,7 @@ impl Knowledge {
 /// Chooses a card to lead a fresh trick.
 fn lead(view: &GameView<'_>, legal: &[Card], trump: Suit, k: &Knowledge) -> Card {
     let hand = view.hand;
-    let we_made = view
-        .contract
-        .is_some_and(|c| c.maker.team() == view.seat.team());
+    let we_made = view.contract.is_some_and(|c| view.seat.same_team(c.maker));
     let trumps: Vec<Card> = legal
         .iter()
         .copied()
@@ -684,7 +675,7 @@ fn opponents_after_me(view: &GameView<'_>) -> usize {
             continue;
         }
         found += 1;
-        if seat.team() != view.seat.team() {
+        if !view.seat.same_team(seat) {
             opponents += 1;
         }
     }
@@ -695,7 +686,7 @@ fn opponents_after_me(view: &GameView<'_>) -> usize {
 fn opponent_void_in(view: &GameView<'_>, k: &Knowledge, suit: Suit) -> bool {
     Seat::ALL
         .into_iter()
-        .filter(|s| s.team() != view.seat.team())
+        .filter(|&s| !view.seat.same_team(s))
         .any(|s| k.is_void(s, suit))
 }
 
@@ -723,10 +714,10 @@ fn card_index(card: Card) -> usize {
 /// Maps a seat to a stable `0..4` index matching [`Seat::ALL`].
 fn seat_index(seat: Seat) -> usize {
     match seat {
-        Seat::North => 0,
-        Seat::East => 1,
-        Seat::South => 2,
-        Seat::West => 3,
+        Seat::First => 0,
+        Seat::Second => 1,
+        Seat::Third => 2,
+        Seat::Dealer => 3,
     }
 }
 
@@ -758,10 +749,10 @@ mod tests {
     }
 
     /// Builds a [`GameView`] from explicit parts; the borrows let each test own
-    /// its hand, trick, and history.
+    /// its hand, trick, and history. The dealer is always `Seat::Dealer`.
     fn make_view<'a>(
         seat: Seat,
-        dealer: Seat,
+        up_card: Card,
         hand: &'a [Card],
         contract: Option<Contract>,
         trick: &'a Trick,
@@ -769,9 +760,10 @@ mod tests {
     ) -> GameView<'a> {
         GameView {
             seat,
-            dealer,
+            up_card,
             hand,
             contract,
+            discarded: None,
             current_trick: trick,
             completed_tricks: completed,
             scores: Scores::default(),
@@ -825,13 +817,17 @@ mod tests {
             card(Rank::King, Suit::Spades),
             card(Rank::Ace, Suit::Hearts),
         ];
-        // North (us) bids; West deals, so ordering up arms an opponent — yet the
-        // hand is strong enough to do it anyway.
-        let view = make_view(Seat::North, Seat::West, &strong, None, &empty, &[]);
-        assert!(matches!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::OrderUp(_)
-        ));
+        // We sit eldest (First), so the dealer is an opponent and ordering up
+        // arms them — yet the hand is strong enough to do it anyway.
+        let view = make_view(
+            Seat::First,
+            card(Rank::Nine, Suit::Spades),
+            &strong,
+            None,
+            &empty,
+            &[],
+        );
+        assert!(matches!(agent.bid_upcard(&view), UpcardBid::OrderUp { .. }));
 
         let junk = [
             card(Rank::Nine, Suit::Hearts),
@@ -840,11 +836,15 @@ mod tests {
             card(Rank::Queen, Suit::Diamonds),
             card(Rank::Nine, Suit::Clubs),
         ];
-        let view = make_view(Seat::North, Seat::West, &junk, None, &empty, &[]);
-        assert_eq!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::Pass
+        let view = make_view(
+            Seat::First,
+            card(Rank::Nine, Suit::Spades),
+            &junk,
+            None,
+            &empty,
+            &[],
         );
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::Pass);
     }
 
     #[test]
@@ -859,11 +859,16 @@ mod tests {
             card(Rank::King, Suit::Spades),
             card(Rank::Ace, Suit::Hearts),
         ];
-        let view = make_view(Seat::North, Seat::North, &loner, None, &empty, &[]);
-        assert_eq!(
-            agent.bid_upcard(&view, card(Rank::Nine, Suit::Spades)),
-            UpcardBid::OrderUp(Bid::Alone)
+        // We are the dealer, so we take the up-card for free.
+        let view = make_view(
+            Seat::Dealer,
+            card(Rank::Nine, Suit::Spades),
+            &loner,
+            None,
+            &empty,
+            &[],
         );
+        assert_eq!(agent.bid_upcard(&view), UpcardBid::OrderUp { alone: true });
     }
 
     #[test]
@@ -871,8 +876,8 @@ mod tests {
         let mut agent = AdvancedAgent::new();
         let empty = Trick::new();
         // Balanced in hearts (red) and spades (black). Diamonds is turned down, so
-        // hearts is "next" (same colour). East defends North's deal and should
-        // favour next.
+        // hearts is "next" (same colour). We sit eldest (First), on the defending
+        // team, and should favour next.
         let hand = [
             card(Rank::Ace, Suit::Hearts),
             card(Rank::King, Suit::Hearts),
@@ -880,8 +885,15 @@ mod tests {
             card(Rank::King, Suit::Spades),
             card(Rank::Nine, Suit::Clubs),
         ];
-        let view = make_view(Seat::East, Seat::North, &hand, None, &empty, &[]);
-        match agent.bid_call(&view, Suit::Diamonds) {
+        let view = make_view(
+            Seat::First,
+            card(Rank::Nine, Suit::Diamonds),
+            &hand,
+            None,
+            &empty,
+            &[],
+        );
+        match agent.bid_call(&view) {
             CallBid::Call { suit, .. } => assert_eq!(suit, Suit::Hearts),
             CallBid::Pass => panic!("expected a call on this hand"),
         }
@@ -891,8 +903,8 @@ mod tests {
     fn dealer_team_calls_green_over_next() {
         let mut agent = AdvancedAgent::new();
         let empty = Trick::new();
-        // Same balanced hand, but now South is the dealer's partner and should
-        // cross to a black (green) suit rather than call next.
+        // Same balanced hand, but now we are the dealer's partner (Second) and
+        // should cross to a black (green) suit rather than call next.
         let hand = [
             card(Rank::Ace, Suit::Hearts),
             card(Rank::King, Suit::Hearts),
@@ -900,8 +912,15 @@ mod tests {
             card(Rank::King, Suit::Spades),
             card(Rank::Nine, Suit::Clubs),
         ];
-        let view = make_view(Seat::South, Seat::North, &hand, None, &empty, &[]);
-        match agent.bid_call(&view, Suit::Diamonds) {
+        let view = make_view(
+            Seat::Second,
+            card(Rank::Nine, Suit::Diamonds),
+            &hand,
+            None,
+            &empty,
+            &[],
+        );
+        match agent.bid_call(&view) {
             CallBid::Call { suit, .. } => assert_eq!(suit.color(), euchre_interface::Color::Black),
             CallBid::Pass => panic!("expected a call on this hand"),
         }
@@ -922,10 +941,10 @@ mod tests {
             card(Rank::Ten, Suit::Spades),
         ];
         let view = make_view(
-            Seat::North,
-            Seat::North,
+            Seat::Dealer,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(Suit::Spades, Seat::North, false)),
+            Some(contract(Suit::Spades, Seat::Dealer, false)),
             &empty,
             &[],
         );
@@ -945,10 +964,10 @@ mod tests {
             card(Rank::Ten, Suit::Clubs),
         ];
         let view = make_view(
-            Seat::North,
-            Seat::North,
+            Seat::Dealer,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(Suit::Spades, Seat::North, false)),
+            Some(contract(Suit::Spades, Seat::Dealer, false)),
             &empty,
             &[],
         );
@@ -971,10 +990,10 @@ mod tests {
             card(Rank::Nine, Suit::Clubs),
         ];
         let view = make_view(
-            Seat::South,
-            Seat::North,
+            Seat::Second,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(Suit::Spades, Seat::South, false)),
+            Some(contract(Suit::Spades, Seat::Second, false)),
             &empty,
             &[],
         );
@@ -989,25 +1008,25 @@ mod tests {
         let mut agent = AdvancedAgent::new();
         let trump = Suit::Spades;
         let mut trick = Trick::new();
-        // Partner (North) leads the right bower — unbeatable. East follows.
+        // Partner (First) leads the right bower — unbeatable. Second follows.
         trick.push(Play {
-            seat: Seat::North,
+            seat: Seat::First,
             card: card(Rank::Jack, Suit::Spades),
         });
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::Nine, Suit::Hearts),
         });
-        // We (South) are void in spades; throw the junk diamond, keep the ace.
+        // We (Third) are void in spades; throw the junk diamond, keep the ace.
         let hand = [
             card(Rank::Ace, Suit::Diamonds),
             card(Rank::Nine, Suit::Diamonds),
         ];
         let view = make_view(
-            Seat::South,
-            Seat::West,
+            Seat::Third,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(trump, Seat::North, false)),
+            Some(contract(trump, Seat::First, false)),
             &trick,
             &[],
         );
@@ -1022,27 +1041,27 @@ mod tests {
         let mut agent = AdvancedAgent::new();
         let trump = Suit::Spades;
         let mut trick = Trick::new();
-        // Partner (North) leads the ace of hearts — winning, but a side card a
-        // defender behind us could ruff. East follows low.
+        // Partner (First) leads the ace of hearts — winning, but a side card a
+        // defender behind us could ruff. Second follows low.
         trick.push(Play {
-            seat: Seat::North,
+            seat: Seat::First,
             card: card(Rank::Ace, Suit::Hearts),
         });
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::Nine, Suit::Hearts),
         });
-        // We (South) are void in hearts and hold the right bower; West is still to
-        // act, so we lock the trick rather than trust a ruffable ace.
+        // We (Third) are void in hearts and hold the right bower; the Dealer is
+        // still to act, so we lock the trick rather than trust a ruffable ace.
         let hand = [
             card(Rank::Jack, Suit::Spades),
             card(Rank::Nine, Suit::Clubs),
         ];
         let view = make_view(
-            Seat::South,
-            Seat::West,
+            Seat::Third,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(trump, Seat::East, false)),
+            Some(contract(trump, Seat::Second, false)),
             &trick,
             &[],
         );
@@ -1057,11 +1076,11 @@ mod tests {
         let mut agent = AdvancedAgent::new();
         let trump = Suit::Spades;
         let mut trick = Trick::new();
-        // East leads the king of hearts; we (South) must follow and hold two
+        // Second leads the king of hearts; we (Third) must follow and hold two
         // winning hearts — take it with the cheaper one is impossible here (only
         // the ace beats the king), so the ace it is, not a trump.
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::King, Suit::Hearts),
         });
         let hand = [
@@ -1070,10 +1089,10 @@ mod tests {
         ];
         let legal = [card(Rank::Ace, Suit::Hearts)];
         let view = make_view(
-            Seat::South,
-            Seat::West,
+            Seat::Third,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(trump, Seat::East, false)),
+            Some(contract(trump, Seat::Second, false)),
             &trick,
             &[],
         );
@@ -1088,9 +1107,9 @@ mod tests {
         let mut agent = AdvancedAgent::new();
         let trump = Suit::Hearts;
         let mut trick = Trick::new();
-        // East leads a trump we cannot beat; we are void in trump and must throw.
+        // Second leads a trump we cannot beat; we are void in trump and must throw.
         trick.push(Play {
-            seat: Seat::East,
+            seat: Seat::Second,
             card: card(Rank::Ace, Suit::Hearts),
         });
         // The ace of spades is the master of its suit; the nine of diamonds is
@@ -1100,10 +1119,10 @@ mod tests {
             card(Rank::Nine, Suit::Diamonds),
         ];
         let view = make_view(
-            Seat::South,
-            Seat::West,
+            Seat::Third,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(trump, Seat::East, false)),
+            Some(contract(trump, Seat::Second, false)),
             &trick,
             &[],
         );
@@ -1118,40 +1137,40 @@ mod tests {
     #[test]
     fn knowledge_infers_voids_and_masters() {
         let trump = Suit::Spades;
-        // A completed trick: North led a club, South could not follow and trumped,
-        // revealing South is void in clubs.
+        // A completed trick: the dealer led a club, Second could not follow and
+        // trumped, revealing Second is void in clubs.
         let mut done = Trick::new();
         done.push(Play {
-            seat: Seat::North,
+            seat: Seat::Dealer,
             card: card(Rank::King, Suit::Clubs),
         });
         done.push(Play {
-            seat: Seat::East,
+            seat: Seat::First,
             card: card(Rank::Ace, Suit::Clubs),
         });
         done.push(Play {
-            seat: Seat::South,
+            seat: Seat::Second,
             card: card(Rank::Nine, Suit::Spades),
         });
         done.push(Play {
-            seat: Seat::West,
+            seat: Seat::Third,
             card: card(Rank::Ten, Suit::Clubs),
         });
-        let completed = [(done, Seat::South)];
+        let completed = [(done, Seat::Second)];
         let empty = Trick::new();
         let hand = [card(Rank::King, Suit::Spades)];
         let view = make_view(
-            Seat::West,
-            Seat::North,
+            Seat::Third,
+            card(Rank::Nine, Suit::Spades),
             &hand,
-            Some(contract(trump, Seat::North, false)),
+            Some(contract(trump, Seat::Dealer, false)),
             &empty,
             &completed,
         );
         let k = Knowledge::from_view(&view, trump);
 
-        assert!(k.is_void(Seat::South, Suit::Clubs));
-        assert!(!k.is_void(Seat::East, Suit::Clubs));
+        assert!(k.is_void(Seat::Second, Suit::Clubs));
+        assert!(!k.is_void(Seat::First, Suit::Clubs));
         assert!(k.played(card(Rank::Ace, Suit::Clubs)));
         // The ace of clubs is gone, so our king of clubs would now be the master
         // of that suit (were we still holding clubs).

@@ -49,7 +49,7 @@ use euchre_agents::neural::features::{
 };
 use euchre_agents::neural::{Head, NeuralModel, PolicyExample, PolicyTrainer, sample_masked};
 use euchre_agents::{AdvancedAgent, NeuralAgent};
-use euchre_engine::{Action, Decision, Driver, Game, GameConfig, Player, Team, Verbosity, deal};
+use euchre_engine::{Action, Decision, Driver, Game, GameConfig, Player, Verbosity, deal};
 use euchre_interface::{Agent, HandResult, Seat};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -223,10 +223,10 @@ fn play_and_collect(
 
     loop {
         match game.next_action() {
-            Action::BidUpcard { seat, up_card } => {
+            Action::BidUpcard { seat, .. } => {
                 let view = game.view(seat);
-                if is_learner[idx(seat)] {
-                    let feats = upcard_features(&view, up_card);
+                if is_learner[game.player_at(seat)] {
+                    let feats = upcard_features(&view);
                     let legal = upcard_legal();
                     let logits = trainer.net(Head::Upcard).forward(&feats);
                     let class = sample_masked(&logits, legal, temperature, act_rng);
@@ -240,7 +240,7 @@ fn play_and_collect(
                     game.apply(Decision::Upcard(upcard_action(class)))
                         .expect("legal up-card");
                 } else {
-                    let action = adv.bid_upcard(&view, up_card);
+                    let action = adv.bid_upcard(&view);
                     game.apply(Decision::Upcard(action)).expect("legal up-card");
                 }
             }
@@ -251,7 +251,7 @@ fn play_and_collect(
             } => {
                 let stuck = !may_pass;
                 let view = game.view(seat);
-                if is_learner[idx(seat)] {
+                if is_learner[game.player_at(seat)] {
                     let feats = call_features(&view, turned_down, stuck);
                     let legal = call_legal(stuck);
                     let logits = trainer.net(Head::Call).forward(&feats);
@@ -266,14 +266,14 @@ fn play_and_collect(
                     game.apply(Decision::Call(call_action(class, turned_down)))
                         .expect("legal call");
                 } else {
-                    let action = adv.bid_call(&view, turned_down);
+                    let action = adv.bid_call(&view);
                     game.apply(Decision::Call(action)).expect("legal call");
                 }
             }
             Action::Discard { seat, .. } => {
                 let view = game.view(seat);
                 let trump = view.trump().expect("trump set at discard");
-                if is_learner[idx(seat)] {
+                if is_learner[game.player_at(seat)] {
                     let feats = discard_features(&view);
                     let legal = card_mask(view.hand, trump);
                     let logits = trainer.net(Head::Discard).forward(&feats);
@@ -295,7 +295,7 @@ fn play_and_collect(
             Action::Play { seat, legal } => {
                 let view = game.view(seat);
                 let trump = view.trump().expect("trump set at play");
-                if is_learner[idx(seat)] {
+                if is_learner[game.player_at(seat)] {
                     if legal.len() == 1 {
                         // Forced: no decision to learn from.
                         game.apply(Decision::Play(legal[0])).expect("legal play");
@@ -319,14 +319,19 @@ fn play_and_collect(
                     game.apply(Decision::Play(card)).expect("legal play");
                 }
             }
-            Action::HandComplete { result, .. } => {
-                let reward = hand_rewards(&result);
+            Action::HandComplete { .. } => {
                 for p in pending.drain(..) {
+                    // The reward is the hand's signed point swing for the seat that
+                    // made the decision (its own team's net points).
+                    let reward = match game.hand_result(p.seat) {
+                        HandResult::Played(score) => score.points_awarded as f32,
+                        HandResult::PassedOut => 0.0,
+                    };
                     samples[p.head.index()].push(RlSample {
                         features: p.features,
                         action: p.action,
                         legal: p.legal,
-                        reward: reward[ti(p.seat.team())],
+                        reward,
                     });
                 }
                 if game.is_over() {
@@ -336,22 +341,6 @@ fn play_and_collect(
                     .expect("ready for next hand");
             }
         }
-    }
-}
-
-/// The signed point swing for each team from a completed hand, indexed by
-/// [`ti`]: the scoring team gets `+points`, the other `−points`, and a passed-out
-/// hand is neutral.
-fn hand_rewards(result: &HandResult) -> [f32; 2] {
-    match result {
-        HandResult::Played(score) => {
-            let (team, points) = score.points_awarded;
-            let mut r = [0.0; 2];
-            r[ti(team)] = points as f32;
-            r[ti(team.opponent())] = -(points as f32);
-            r
-        }
-        HandResult::PassedOut => [0.0, 0.0],
     }
 }
 
@@ -376,10 +365,10 @@ fn eval_vs_advanced(model: &Arc<NeuralModel>, pairs: u64) -> f64 {
     let mut wins = 0u64;
     for s in 0..pairs {
         let seed = EVAL_SEED_BASE + s;
-        if eval_match(model, seed, true) == Team::NorthSouth {
+        if eval_match(model, seed, true) == 0 {
             wins += 1;
         }
-        if eval_match(model, seed, false) == Team::EastWest {
+        if eval_match(model, seed, false) == 1 {
             wins += 1;
         }
     }
@@ -387,8 +376,9 @@ fn eval_vs_advanced(model: &Arc<NeuralModel>, pairs: u64) -> f64 {
 }
 
 /// One evaluation match: the (deterministic) neural agent on North/South when
-/// `nn_ns`, else East/West, against the advanced agent.
-fn eval_match(model: &Arc<NeuralModel>, seed: u64, nn_ns: bool) -> Team {
+/// `nn_ns`, else East/West, against the advanced agent. Returns the winning team
+/// index (0 = North/South, 1 = East/West).
+fn eval_match(model: &Arc<NeuralModel>, seed: u64, nn_ns: bool) -> usize {
     let nn = || Box::new(NeuralAgent::from_shared(model.clone())) as Box<dyn Agent>;
     let adv = || Box::new(AdvancedAgent::new()) as Box<dyn Agent>;
     let (mut north, mut east, mut south, mut west) = if nn_ns {
@@ -413,20 +403,6 @@ fn eval_match(model: &Arc<NeuralModel>, seed: u64, nn_ns: bool) -> Team {
     .run()
     .expect("headless match never fails on I/O")
     .winner
-}
-
-fn idx(seat: Seat) -> usize {
-    Seat::ALL
-        .iter()
-        .position(|&s| s == seat)
-        .expect("seat in ALL")
-}
-
-fn ti(team: Team) -> usize {
-    match team {
-        Team::NorthSouth => 0,
-        Team::EastWest => 1,
-    }
 }
 
 // --- Minimal argument parsing ------------------------------------------------
