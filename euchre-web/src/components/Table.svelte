@@ -76,7 +76,7 @@
         <p class="final">
           N/S {game.gameOver.scores.north_south} — {game.gameOver.scores.east_west} E/W
         </p>
-        <button onclick={() => (game.gameOver = null)}>Play again</button>
+        <p class="returning">Returning to the table…</p>
       </div>
     </div>
   {/if}
@@ -204,14 +204,8 @@
     font-size: 1.2rem;
     margin: 0 0 18px;
   }
-  .panel button {
-    font: inherit;
-    font-weight: 600;
-    padding: 10px 22px;
-    border: none;
-    border-radius: 9px;
-    background: #e7b53d;
-    color: #14361f;
-    cursor: pointer;
+  .panel .returning {
+    margin: 0;
+    opacity: 0.7;
   }
 </style>

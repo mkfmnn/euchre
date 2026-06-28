@@ -31,7 +31,7 @@ import type {
   Player,
   PublicAction,
   Seat,
-  SeatedPlayer,
+  SeatInfo,
   ServerMsg,
   Suit,
   TeamId,
@@ -56,6 +56,8 @@ const ACTION_GAP_MS = 500;
 const TRICK_LINGER_MS = 1000;
 /** How long a hand's result lingers before the next hand is dealt. */
 const HAND_END_PAUSE_MS = 1500;
+/** How long the "game over" result lingers before returning to the lobby. */
+const GAME_OVER_LINGER_MS = 4000;
 
 /** Fixed-team cumulative score, indexed by team (`0` = North/South). */
 type TeamScores = { north_south: number; east_west: number };
@@ -93,6 +95,7 @@ function paceSetting(msg: ServerMsg): boolean {
     case 'UPDATE': // any action: bid, pass, discard, or play
     case 'TRICK_WON':
     case 'HAND_COMPLETE':
+    case 'GAME_OVER': // so the lobby return is timed from the result showing
     case 'DEAL': // so the first bid sits a beat after the hand is dealt
       return true;
     default:
@@ -106,8 +109,14 @@ export class GameStore {
   error = $state<string | null>(null);
 
   // --- table identity -----------------------------------------------------
+  /** The joined table's short code, shown in the lobby. */
+  tableCode = $state<string | null>(null);
+  /** This client's seat, or `null` while it has not sat down. */
   mySeat = $state<Player | null>(null);
-  players = $state<(SeatedPlayer | null)[]>(playerArray<SeatedPlayer | null>(() => null));
+  /** Who occupies each seat, used by the lobby. */
+  seats = $state<SeatInfo[]>(playerArray<SeatInfo>(() => ({ type: 'Empty' })));
+  /** Per-seat display name (or `null` if empty), used by the game board. */
+  players = $state<({ name: string } | null)[]>(playerArray<{ name: string } | null>(() => null));
   dealer = $state<Player | null>(null);
 
   // --- bidding ------------------------------------------------------------
@@ -148,7 +157,8 @@ export class GameStore {
   // --- private ------------------------------------------------------------
   private ws: WebSocket | null = null;
   private name = 'You';
-  private preferredSeat: Player | null = null;
+  /** The table to join on HELLO, or `null` to create a fresh one. */
+  private joinTable: string | null = null;
   private lastBidUp = true;
   private bubbleSeq = 0;
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -180,9 +190,10 @@ export class GameStore {
   }
 
   // --- connection ---------------------------------------------------------
-  connect(url: string, name: string, seat: Player | null): void {
+  /** Connect and either create a table (`table === null`) or join `table`. */
+  connect(url: string, name: string, table: string | null): void {
     this.name = name.trim() || 'You';
-    this.preferredSeat = seat;
+    this.joinTable = table;
     this.error = null;
     this.status = 'connecting';
     this.resetQueue();
@@ -198,7 +209,7 @@ export class GameStore {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.send({ type: 'HELLO', name: this.name, seat: this.preferredSeat });
+      this.send({ type: 'HELLO', name: this.name, table: this.joinTable ?? undefined });
     };
     ws.onmessage = (event) => {
       try {
@@ -208,7 +219,7 @@ export class GameStore {
       }
     };
     ws.onerror = () => {
-      if (this.status !== 'joined') {
+      if (this.status !== 'lobby' && this.status !== 'playing') {
         this.status = 'error';
         this.error = 'Could not reach the server. Is euchre-server running?';
       }
@@ -216,13 +227,27 @@ export class GameStore {
     ws.onclose = () => {
       this.clearTimers();
       this.resetQueue();
-      if (this.status === 'joined') {
+      if (this.status === 'playing') {
         this.status = 'closed';
       } else if (this.status !== 'error') {
         this.status = 'error';
-        this.error ??= 'The connection closed before the table was joined.';
+        this.error ??= 'The connection closed.';
       }
     };
+  }
+
+  // --- lobby actions ------------------------------------------------------
+  /** Take `seat` for yourself. */
+  sit(seat: Player): void {
+    this.send({ type: 'SEAT', seat, player: { type: 'Self' } });
+  }
+  /** Fill the empty `seat` with a bot. */
+  addBot(seat: Player): void {
+    this.send({ type: 'SEAT', seat, player: { type: 'Bot' } });
+  }
+  /** Empty `seat` (your own or a bot's). */
+  vacate(seat: Player): void {
+    this.send({ type: 'SEAT', seat, player: { type: 'Empty' } });
   }
 
   // --- outgoing actions ---------------------------------------------------
@@ -290,6 +315,10 @@ export class GameStore {
       case 'DEAL':
       case 'GAME_OVER':
         return HAND_END_PAUSE_MS;
+      case 'TABLE_STATE':
+        // After a match, let the result sit before returning to the lobby; at
+        // join time (no result showing) switch immediately.
+        return this.gameOver ? GAME_OVER_LINGER_MS : 0;
       default:
         return 0;
     }
@@ -305,13 +334,20 @@ export class GameStore {
   // --- incoming messages --------------------------------------------------
   private apply(msg: ServerMsg): void {
     switch (msg.type) {
-      case 'JOINED': {
+      case 'TABLE_STATE': {
+        this.tableCode = msg.table;
         this.mySeat = msg.your_seat;
+        this.seats = msg.seats;
+        this.players = msg.seats.map((s) => (s.type === 'Empty' ? null : { name: s.name }));
+        this.gameOver = null;
+        this.status = 'lobby';
+        break;
+      }
+      case 'START_GAME': {
         this.dealer = msg.first_dealer;
-        const players = playerArray<SeatedPlayer | null>(() => null);
-        for (const p of msg.players) players[p.seat] = p;
-        this.players = players;
-        this.status = 'joined';
+        this.scores = { north_south: 0, east_west: 0 };
+        this.gameOver = null;
+        this.status = 'playing';
         break;
       }
       case 'SYNC': {

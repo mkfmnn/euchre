@@ -16,8 +16,8 @@
 //
 //   * `Player` — a **fixed** table position (`0` = North … `3` = West), stable
 //     across the whole match. Every top-level message field that names a
-//     participant (`your_seat`, `dealer`, `player`, `maker` of the played card,
-//     `SeatedPlayer.seat`) is a `Player`. This is the identity the UI works in.
+//     participant (`your_seat`, `dealer`, `player`, `maker` of the played card)
+//     is a `Player`. This is the identity the UI works in.
 //   * `Seat` — the engine's **dealer-relative** seat (`First` is the
 //     dealer's left, around to `Dealer`), which rotates each hand. It appears
 //     only *inside* the trick history of a `SYNC` snapshot (`Play.seat`,
@@ -46,12 +46,17 @@ export type TeamId = number;
 /** A card's compact two-letter wire code, e.g. `"JS"`, `"TH"`, `"9C"`. */
 export type CardCode = string;
 
-export interface SeatedPlayer {
-  seat: Player;
-  name: string;
-  /** Whether this position is filled by a server-side bot. */
-  bot: boolean;
-}
+/** Who occupies a seat, as listed in a `TABLE_STATE` message. */
+export type SeatInfo =
+  | { type: 'Empty' }
+  | { type: 'Bot'; name: string }
+  | { type: 'Human'; name: string };
+
+/** What a `SEAT` request asks the server to put at a seat. */
+export type SeatRequest =
+  | { type: 'Self' } // the sender takes the seat
+  | { type: 'Bot' } // fill it with a bot
+  | { type: 'Empty' }; // empty it
 
 /**
  * Cumulative match score, told from the receiving client's point of view: `us`
@@ -124,7 +129,8 @@ export interface PlayerView {
 
 /** A message from the server to this client. */
 export type ServerMsg =
-  | { type: 'JOINED'; players: SeatedPlayer[]; your_seat: Player; first_dealer: Player }
+  | { type: 'TABLE_STATE'; table: string; your_seat: Player | null; seats: SeatInfo[] }
+  | { type: 'START_GAME'; first_dealer: Player }
   | { type: 'DEAL'; dealer: Player; hand: CardCode[]; up_card: CardCode }
   | { type: 'AWAITING'; player: Player; hint: TurnHint; legal?: CardCode[] }
   | { type: 'UPDATE'; player: Player; action: PublicAction }
@@ -136,7 +142,8 @@ export type ServerMsg =
 
 /** A message from this client to the server. */
 export type ClientMsg =
-  | { type: 'HELLO'; name: string; seat?: Player | null }
+  | { type: 'HELLO'; name: string; table?: string | null }
+  | { type: 'SEAT'; seat: Player; player: SeatRequest }
   | { type: 'BID'; suit: Suit; alone: boolean }
   | { type: 'PASS' }
   | { type: 'DISCARD'; card: CardCode }

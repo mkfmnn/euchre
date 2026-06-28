@@ -7,12 +7,18 @@
 //! cargo run -p euchre-server --example cli_client   # in another
 //! ```
 //!
-//! Set `EUCHRE_URL` (default `ws://127.0.0.1:8080/ws`) and `EUCHRE_NAME`
-//! (default `human`) to override the target and display name.
+//! Set `EUCHRE_URL` (default `ws://127.0.0.1:8080/ws`), `EUCHRE_NAME`
+//! (default `human`), and `EUCHRE_TABLE` (a code to join; omit to create a new
+//! table) to override the target, display name, and table.
+//!
+//! Seating is automatic: the client takes the first open seat, then fills the
+//! rest of the table with bots so a match starts on its own.
 
 use std::io::Write;
 
-use euchre_server::protocol::{ClientMsg, PublicAction, ServerMsg, TurnHint};
+use euchre_server::protocol::{
+    ClientMsg, PublicAction, SeatInfo, SeatRequest, ServerMsg, TurnHint,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -20,13 +26,14 @@ use tokio_tungstenite::tungstenite::Message;
 async fn main() {
     let url = std::env::var("EUCHRE_URL").unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".into());
     let name = std::env::var("EUCHRE_NAME").unwrap_or_else(|_| "human".into());
+    let table = std::env::var("EUCHRE_TABLE").ok();
 
     let (ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("connect to server");
     let (mut tx, mut rx) = ws.split();
 
-    send(&mut tx, &ClientMsg::Hello { name, seat: None }).await;
+    send(&mut tx, &ClientMsg::Hello { name, table }).await;
 
     while let Some(item) = rx.next().await {
         let Ok(Message::Text(text)) = item else {
@@ -43,14 +50,50 @@ async fn main() {
             }
         };
         match msg {
-            ServerMsg::Joined {
-                players, your_seat, ..
+            ServerMsg::TableState {
+                table,
+                your_seat,
+                seats,
             } => {
-                println!("Joined as {your_seat:?}. Table:");
-                for p in players {
-                    let kind = if p.bot { "bot" } else { "human" };
-                    println!("  {:?}: {} ({kind})", p.seat, p.name);
+                println!("Table {table}. Seats:");
+                for (i, s) in seats.iter().enumerate() {
+                    let who = match s {
+                        SeatInfo::Empty => "(empty)".to_string(),
+                        SeatInfo::Bot { name } => format!("{name} (bot)"),
+                        SeatInfo::Human { name } => format!("{name} (human)"),
+                    };
+                    println!("  {i}: {who}");
                 }
+                // Take a seat if we have none, then fill the rest with bots.
+                match your_seat {
+                    None => {
+                        if let Some(seat) = first_empty(&seats) {
+                            send(
+                                &mut tx,
+                                &ClientMsg::Seat {
+                                    seat,
+                                    player: SeatRequest::Me,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                    Some(_) => {
+                        for seat in empties(&seats) {
+                            send(
+                                &mut tx,
+                                &ClientMsg::Seat {
+                                    seat,
+                                    player: SeatRequest::Bot,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            ServerMsg::StartGame { first_dealer } => {
+                println!("Game starting — first dealer {first_dealer:?}.");
             }
             ServerMsg::Sync { view } => {
                 println!("Your hand: {}", cards(&view.hand));
@@ -164,6 +207,18 @@ fn ask(prompt: &str) -> Option<String> {
         Ok(0) | Err(_) => None,
         Ok(_) => Some(line),
     }
+}
+
+/// The seat positions that are currently empty.
+fn empties(seats: &[SeatInfo; 4]) -> Vec<u8> {
+    (0..4)
+        .filter(|&i| matches!(seats[i as usize], SeatInfo::Empty))
+        .collect()
+}
+
+/// The first empty seat position, if any.
+fn first_empty(seats: &[SeatInfo; 4]) -> Option<u8> {
+    empties(seats).first().copied()
 }
 
 fn cards(cards: &[euchre_interface::Card]) -> String {

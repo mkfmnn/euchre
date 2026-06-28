@@ -6,17 +6,25 @@
   const defaultUrl = `ws://${location.hostname || '127.0.0.1'}:8080/ws`;
   let name = $state('You');
   let url = $state(defaultUrl);
+  /** Whether the join-by-code field is showing. */
+  let joining = $state(false);
+  let code = $state('');
 
-  function connect(event: SubmitEvent): void {
+  const connecting = $derived(game.status === 'connecting');
+
+  function createTable(): void {
+    game.connect(url.trim(), name, null);
+  }
+  function joinTable(event: SubmitEvent): void {
     event.preventDefault();
-    // Sit South (player 2) so the local player is at the bottom of the table.
-    game.connect(url.trim(), name, 2);
+    if (code.trim().length === 0) return;
+    game.connect(url.trim(), name, code.trim());
   }
 </script>
 
-<form class="start" onsubmit={connect}>
+<div class="start">
   <h1>Euchre</h1>
-  <p class="tagline">Sit down at a table against three bots.</p>
+  <p class="tagline">Create a table or join one by code.</p>
 
   <label>
     Name
@@ -27,16 +35,44 @@
     <input bind:value={url} autocomplete="off" spellcheck="false" />
   </label>
 
-  <button type="submit" disabled={game.status === 'connecting'}>
-    {game.status === 'connecting' ? 'Connecting…' : 'Sit down'}
-  </button>
+  {#if joining}
+    <form class="join" onsubmit={joinTable}>
+      <label>
+        Table code
+        <input
+          bind:value={code}
+          maxlength="4"
+          inputmode="numeric"
+          placeholder="0000"
+          autocomplete="off"
+        />
+      </label>
+      <div class="row">
+        <button type="button" class="ghost" onclick={() => (joining = false)} disabled={connecting}>
+          Back
+        </button>
+        <button type="submit" disabled={connecting || code.trim().length === 0}>
+          {connecting ? 'Joining…' : 'Join'}
+        </button>
+      </div>
+    </form>
+  {:else}
+    <div class="row">
+      <button type="button" onclick={createTable} disabled={connecting}>
+        {connecting ? 'Connecting…' : 'Create Table'}
+      </button>
+      <button type="button" class="ghost" onclick={() => (joining = true)} disabled={connecting}>
+        Join Table
+      </button>
+    </div>
+  {/if}
 
   {#if game.error}
     <p class="err">{game.error}</p>
   {/if}
 
   <p class="hint">Run the server first: <code>cargo run -p euchre-server</code></p>
-</form>
+</div>
 
 <style>
   .start {
@@ -88,6 +124,21 @@
   button:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+  .ghost {
+    background: transparent;
+    color: inherit;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+  }
+  .row button {
+    flex: 1;
+  }
+  .join {
+    display: contents;
   }
   .err {
     margin: 0;

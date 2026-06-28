@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use euchre_engine::GameConfig;
 use euchre_interface::Card;
-use euchre_server::protocol::{ClientMsg, Player, ServerMsg, TurnHint};
+use euchre_server::protocol::{ClientMsg, Player, SeatInfo, SeatRequest, ServerMsg, TurnHint};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -48,7 +48,7 @@ async fn play_a_match(addr: std::net::SocketAddr) -> (u8, u8, u8) {
         &mut tx,
         &ClientMsg::Hello {
             name: "tester".into(),
-            seat: None,
+            table: None,
         },
     )
     .await;
@@ -61,7 +61,41 @@ async fn play_a_match(addr: std::net::SocketAddr) -> (u8, u8, u8) {
             continue;
         };
         match serde_json::from_str::<ServerMsg>(&text).unwrap() {
-            ServerMsg::Joined { your_seat, .. } => my_seat = Some(your_seat),
+            ServerMsg::TableState {
+                your_seat, seats, ..
+            } => {
+                my_seat = your_seat;
+                // Take the first open seat, then fill the rest with bots so the
+                // match auto-starts.
+                match your_seat {
+                    None => {
+                        let seat = (0..4)
+                            .find(|&i| matches!(seats[i as usize], SeatInfo::Empty))
+                            .expect("an open seat");
+                        send(
+                            &mut tx,
+                            &ClientMsg::Seat {
+                                seat,
+                                player: SeatRequest::Me,
+                            },
+                        )
+                        .await;
+                    }
+                    Some(_) => {
+                        for seat in (0..4).filter(|&i| matches!(seats[i as usize], SeatInfo::Empty))
+                        {
+                            send(
+                                &mut tx,
+                                &ClientMsg::Seat {
+                                    seat,
+                                    player: SeatRequest::Bot,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
             ServerMsg::Deal { hand: h, .. } => hand = h,
             ServerMsg::GameOver { winner, scores } => {
                 // winner is a fixed team index (0 = North/South, 1 = East/West).

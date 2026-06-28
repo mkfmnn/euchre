@@ -41,13 +41,18 @@ pub type TeamId = u8;
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ClientMsg {
     /// The first message a client must send: announce a display name and,
-    /// optionally, a preferred table position. The server replies with
-    /// [`ServerMsg::Joined`].
+    /// optionally, the code of a table to join. When `table` is omitted the
+    /// server creates a fresh table; otherwise it joins the named one (or
+    /// replies with an [`ServerMsg::Error`] if no such table exists). Either way
+    /// the server replies with a [`ServerMsg::TableState`].
     Hello {
         name: String,
         #[serde(default)]
-        seat: Option<Player>,
+        table: Option<String>,
     },
+    /// In the lobby, request a change to `seat`: take it yourself, fill it with a
+    /// bot, or empty it. Broadcasts a fresh [`ServerMsg::TableState`] to everyone.
+    Seat { seat: Player, player: SeatRequest },
     /// Bid: in the first round, order up the up-card's suit; in the second,
     /// name `suit` as trump. `alone` requests going it alone.
     Bid { suit: Suit, alone: bool },
@@ -59,17 +64,37 @@ pub enum ClientMsg {
     Play { card: Card },
 }
 
+/// What a [`ClientMsg::Seat`] asks the server to put at a seat. `Bot` is a
+/// struct-style variant so a future difficulty selector can be added without a
+/// protocol break.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SeatRequest {
+    /// The sender takes the seat, leaving any seat they currently hold.
+    #[serde(rename = "Self")]
+    Me,
+    /// Fill the (empty) seat with a server-side bot.
+    Bot,
+    /// Empty the seat (only one's own seat or a bot seat).
+    Empty,
+}
+
 /// A message from the server to a client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ServerMsg {
-    /// Acknowledges a [`ClientMsg::Hello`]: the table roster, the table position
-    /// assigned to this client, and who deals the current hand.
-    Joined {
-        players: Vec<SeatedPlayer>,
-        your_seat: Player,
-        first_dealer: Player,
+    /// The lobby snapshot: the table's code, which seat (if any) this connection
+    /// holds, and who occupies each of the four seats. Broadcast (per-connection,
+    /// so `your_seat` is right for each) whenever seating changes, and again when
+    /// a match ends and the table returns to the lobby.
+    TableState {
+        table: String,
+        your_seat: Option<Player>,
+        seats: [SeatInfo; 4],
     },
+    /// The lobby filled and a match is beginning. `first_dealer` deals the first
+    /// hand; the usual [`Deal`](ServerMsg::Deal) stream follows.
+    StartGame { first_dealer: Player },
     /// A fresh hand has been dealt. Sent privately — `hand` is this client's
     /// cards only.
     Deal {
@@ -143,13 +168,16 @@ pub enum PublicAction {
     Play { card: Card },
 }
 
-/// A table position's occupant, as listed in [`ServerMsg::Joined`].
+/// Who occupies a seat, as listed in a [`ServerMsg::TableState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SeatedPlayer {
-    pub seat: Player,
-    pub name: String,
-    /// Whether this position is filled by a server-side bot.
-    pub bot: bool,
+#[serde(tag = "type")]
+pub enum SeatInfo {
+    /// Nobody is in the seat.
+    Empty,
+    /// A server-side bot, with its display name.
+    Bot { name: String },
+    /// A connected human, with their display name.
+    Human { name: String },
 }
 
 /// An owned snapshot of everything a seat may see, for [`ServerMsg::Sync`].
