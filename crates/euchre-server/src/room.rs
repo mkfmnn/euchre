@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use euchre_agents::HeuristicAgent;
+use euchre_agents::{HeuristicAgent, NeuralAgent};
 use euchre_engine::{Action, Decision, Game, GameConfig};
 use euchre_interface::{Agent, GameView, Seat};
 use rand::rngs::ChaCha12Rng;
@@ -40,7 +40,7 @@ use tokio::time::Instant;
 
 use crate::Registry;
 use crate::protocol::{ClientMsg, Player, SeatInfo, SeatRequest, ServerMsg};
-use crate::view::{decision_from, hint_for, public_action};
+use crate::view::{decision_from, hint_for, public_action, suggestion};
 
 /// How long the room waits for a human's move before substituting a bot one, so
 /// a slow or vanished player cannot wedge the table.
@@ -103,6 +103,10 @@ pub struct Room {
     seats: [SeatSlot; 4],
     /// Used to compute a legal move when a human times out or disconnects.
     fallback: HeuristicAgent,
+    /// The neural agent backing assist mode, or `None` when assist is off. When
+    /// set, the active human gets a [`ServerMsg::Suggest`] after each
+    /// [`ServerMsg::Awaiting`]. Shares the embedded model, so it is cheap to hold.
+    assist: Option<NeuralAgent>,
     rx: mpsc::UnboundedReceiver<RoomMsg>,
 }
 
@@ -120,6 +124,7 @@ impl Room {
     /// Creates an empty table: no connections, all seats open, no game yet.
     pub fn new(
         config: GameConfig,
+        assist: bool,
         code: String,
         registry: Registry,
         rx: mpsc::UnboundedReceiver<RoomMsg>,
@@ -138,6 +143,7 @@ impl Room {
                 SeatSlot::Empty,
             ],
             fallback: HeuristicAgent::new(),
+            assist: assist.then(NeuralAgent::pretrained),
             rx,
         }
     }
@@ -563,6 +569,27 @@ impl Room {
                     legal,
                 });
             }
+        }
+        self.suggest_to(action, active);
+    }
+
+    /// In assist mode, sends the active human the neural agent's recommendation
+    /// and per-option scores for the pending `action`. A no-op when assist is
+    /// off, the seat on turn is a bot, or the agent has no decision to score.
+    fn suggest_to(&self, action: &Action, active: Seat) {
+        let Some(agent) = &self.assist else { return };
+        let game = self.game();
+        let active_player = game.player_at(active);
+        let Some(conn) = self.seat_conn(active_player) else {
+            return; // a bot (or vacated seat): nobody to advise
+        };
+        let view = game.view(active);
+        if let Some((recommended, scores)) = suggestion(agent, action, &view) {
+            let _ = conn.out.send(ServerMsg::Suggest {
+                player: active_player as u8,
+                recommended,
+                scores,
+            });
         }
     }
 

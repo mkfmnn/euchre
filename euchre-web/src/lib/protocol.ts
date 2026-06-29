@@ -101,6 +101,23 @@ export type PublicAction =
   | { type: 'PLAY'; card: CardCode };
 
 /**
+ * A move the assist net can recommend or score, in this client's own action
+ * vocabulary. Unlike {@link PublicAction}, a discard names its card: an assist
+ * suggestion is private to the seat it is sent to.
+ */
+export type SuggestedAction =
+  | { type: 'BID'; suit: Suit; alone: boolean }
+  | { type: 'PASS' }
+  | { type: 'DISCARD'; card: CardCode }
+  | { type: 'PLAY'; card: CardCode };
+
+/** One option the assist net weighed, paired with its raw logit (higher is better). */
+export interface ScoredAction {
+  action: SuggestedAction;
+  score: number;
+}
+
+/**
  * How a played hand scored, told from the receiving client's point of view.
  * `points_awarded` is the net points to the client's own team: positive if it
  * scored, negative if the opponents did.
@@ -138,7 +155,13 @@ export type ServerMsg =
   | { type: 'HAND_COMPLETE'; result: HandResult }
   | { type: 'GAME_OVER'; winner: TeamId; scores: [number, number] }
   | { type: 'ERROR'; message: string }
-  | { type: 'SYNC'; view: PlayerView };
+  | { type: 'SYNC'; view: PlayerView }
+  | {
+      type: 'SUGGEST';
+      player: Player;
+      recommended: SuggestedAction;
+      scores: ScoredAction[];
+    };
 
 /** A message from this client to the server. */
 export type ClientMsg =

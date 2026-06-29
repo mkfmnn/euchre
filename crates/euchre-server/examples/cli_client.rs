@@ -126,6 +126,9 @@ async fn main() {
                 println!("GAME OVER — {team} wins ({}-{}).", scores[0], scores[1]);
             }
             ServerMsg::Error { message } => eprintln!("(error: {message})"),
+            ServerMsg::Suggest { recommended, .. } => {
+                println!("  (assist: try {recommended:?})");
+            }
             ServerMsg::Awaiting {
                 player,
                 hint,

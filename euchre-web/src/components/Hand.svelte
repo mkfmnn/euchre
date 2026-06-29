@@ -24,7 +24,14 @@
 
 <div class="my-hand">
   {#each game.hand as code (code)}
-    <div class="slot" animate:flip={{ duration: 260 }}>
+    <!-- The assist ring and score live on the slot wrapper so they sit clear of
+         the card's own button hover/outline styling. -->
+    <div
+      class="slot"
+      class:recommended={game.isRecommendedCard(code)}
+      title={game.cardTip(code)}
+      animate:flip={{ duration: 260 }}
+    >
       <PlayingCard
         {code}
         size="lg"
@@ -46,8 +53,18 @@
   }
   .slot {
     margin-left: -14px;
+    border-radius: 10px;
   }
   .slot:first-child {
     margin-left: 0;
+  }
+  /* The neural agent's recommended card: a green ring, lifted above its
+     neighbours so the overlap never clips it. */
+  .slot.recommended {
+    position: relative;
+    z-index: 5;
+    outline: 3px solid #2fbf71;
+    outline-offset: 2px;
+    box-shadow: 0 0 10px rgba(47, 191, 113, 0.7);
   }
 </style>

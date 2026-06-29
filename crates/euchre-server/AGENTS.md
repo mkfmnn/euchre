@@ -2,6 +2,7 @@
 
 ```bash
 cargo run -p euchre-server                       # serve on EUCHRE_ADDR (default 127.0.0.1:8080), route /ws
+EUCHRE_ASSIST=1 cargo run -p euchre-server       # ...with assist mode on (neural SUGGEST hints to humans)
 cargo run -p euchre-server --example cli_client  # connect a terminal client (EUCHRE_TABLE to join a code; omit to create)
 ```
 
@@ -30,6 +31,15 @@ code in a shared `Registry`. A client picks a table (or creates one) in its
   **event-sourced**: clients learn their hand from `Deal`, then derive state
   from `Update` / `TrickWon`; `Sync` is only for join/reconnect. Hidden info is
   preserved — a `Discard` rebroadcast carries no card.
-- **`view.rs`** — translation between protocol types and engine types.
+- **Assist mode** — an operator toggle (`EUCHRE_ASSIST=1`/`true`, off by
+  default), threaded from `main`/`serve`/`router` into `AppState.assist` and
+  each `Room`. When on, a room holds a shared `NeuralAgent` and, right after
+  every `Awaiting`, privately sends the active human a `Suggest` — the agent's
+  recommended move plus the raw network score of each option (`view::suggestion`
+  builds it; `NeuralAgent::score_*` supply the logits). The recommended move is
+  the top-scored option, so it matches what the bot would play. Off → no
+  `Suggest` is ever sent.
+- **`view.rs`** — translation between protocol types and engine types, plus
+  `suggestion()` for assist hints.
 - **`lib.rs`** — `router`/`serve` wire the `Registry` into an Axum app at `/ws`;
   `AppState::create_table`/`table` spawn and look up rooms.

@@ -23,11 +23,21 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let addr = std::env::var("EUCHRE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let assist = assist_enabled();
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!(
-        "euchre-server listening on ws://{}/ws",
-        listener.local_addr()?
+        "euchre-server listening on ws://{}/ws (assist mode {})",
+        listener.local_addr()?,
+        if assist { "on" } else { "off" }
     );
 
-    euchre_server::serve(listener, GameConfig::default()).await
+    euchre_server::serve(listener, GameConfig::default(), assist).await
+}
+
+/// Whether to run with assist mode on, read from `EUCHRE_ASSIST`. Truthy values
+/// are `1` and `true` (any case); anything else (or unset) leaves it off.
+fn assist_enabled() -> bool {
+    std::env::var("EUCHRE_ASSIST")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }

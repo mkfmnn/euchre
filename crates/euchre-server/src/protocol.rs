@@ -133,6 +133,47 @@ pub enum ServerMsg {
     /// A full snapshot of the game from this client's seat, for join/reconnect
     /// resync. Defined for forward use; the walking skeleton sends it on join.
     Sync { view: PlayerView },
+    /// An assist hint for the active player: the move the neural agent
+    /// recommends and the raw network score of every option it weighed. Sent —
+    /// only when the server runs with assist mode enabled (the `EUCHRE_ASSIST`
+    /// environment variable) — privately to the seat on turn, right after the
+    /// matching [`Awaiting`](ServerMsg::Awaiting). A client outlines the
+    /// `recommended` option and surfaces each option's `score` on hover; with
+    /// assist disabled no `Suggest` is ever sent.
+    Suggest {
+        player: Player,
+        recommended: SuggestedAction,
+        scores: Vec<ScoredAction>,
+    },
+}
+
+/// A move the assist net can recommend or score, spelled in the client's own
+/// action vocabulary so the UI can match it straight to a button or card.
+///
+/// Unlike the public [`PublicAction::Discard`], a [`SuggestedAction::Discard`]
+/// names its card: a suggestion is private to the seat it is sent to, so there
+/// is no hidden information to protect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SuggestedAction {
+    /// Name `suit` as trump (order up in round one, call in round two),
+    /// optionally alone.
+    Bid { suit: Suit, alone: bool },
+    /// Decline to bid.
+    Pass,
+    /// Bury `card` as the dealer.
+    Discard { card: Card },
+    /// Play `card` to the trick.
+    Play { card: Card },
+}
+
+/// One option the assist net weighed, paired with its raw logit. Higher is
+/// better; the scores are not probabilities, so only their ordering and
+/// relative gaps are meaningful.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredAction {
+    pub action: SuggestedAction,
+    pub score: f32,
 }
 
 /// What kind of decision the active seat must make, carried by
