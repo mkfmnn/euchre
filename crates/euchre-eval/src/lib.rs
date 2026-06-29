@@ -55,7 +55,9 @@ pub mod runner;
 pub mod stats;
 pub mod tournament;
 
-use euchre_agents::{AdvancedAgent, HeuristicAgent, MonteCarloAgent, NeuralAgent, RandomAgent};
+use euchre_agents::{
+    AdvancedAgent, HeuristicAgent, MonteCarloAgent, NeuralAgent, RandomAgent, StrongAgent,
+};
 use euchre_interface::Agent;
 use runner::{AgentFactory, Contestant};
 
@@ -63,9 +65,10 @@ use runner::{AgentFactory, Contestant};
 ///
 /// Recognised names are `"random"`, `"heuristic"`, `"advanced"`, `"montecarlo"`,
 /// `"montecarlo-play"` (the Monte-Carlo agent with bidding search disabled, so it
-/// delegates bidding to the advanced agent), and `"neural"` (the learned,
-/// search-free policy-network agent). New agents should be added here so the CLI
-/// and any tooling can name them.
+/// delegates bidding to the advanced agent), `"neural"` (the learned, search-free
+/// policy-network agent), and `"strong"` (a wider, RL-tuned policy network trained
+/// to beat the neural champion). New agents should be added here so the CLI and any
+/// tooling can name them.
 pub fn builtin(name: &str) -> Option<Contestant> {
     let factory: AgentFactory = match name {
         "random" => Box::new(|seed| Box::new(RandomAgent::with_seed(seed)) as Box<dyn Agent>),
@@ -78,6 +81,7 @@ pub fn builtin(name: &str) -> Option<Contestant> {
             Box::new(MonteCarloAgent::with_seed(seed).play_only()) as Box<dyn Agent>
         }),
         "neural" => Box::new(|_seed| Box::new(NeuralAgent::pretrained()) as Box<dyn Agent>),
+        "strong" => Box::new(|_seed| Box::new(StrongAgent::pretrained()) as Box<dyn Agent>),
         _ => return None,
     };
     Some(Contestant::new(name, factory))
@@ -91,4 +95,5 @@ pub const BUILTIN_AGENTS: &[&str] = &[
     "montecarlo",
     "montecarlo-play",
     "neural",
+    "strong",
 ];
