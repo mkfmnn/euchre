@@ -67,6 +67,7 @@ Depends only on `euchre-interface`, but takes a dev-dependency on
 - `AdvancedAgent` — a stronger heuristic player
 - `MonteCarloAgent` — a searching agent (Perfect-Information Monte Carlo)
 - `NeuralAgent` — a *learned*, search-free agent
+- `StrongAgent` — a *learned*, search-free agent tuned to beat `NeuralAgent`
 
 ### `euchre-server` — websocket multiplayer
 

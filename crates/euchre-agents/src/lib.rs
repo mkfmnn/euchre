@@ -26,6 +26,11 @@
 //!   forward pass yet the agent plays *better* than the teacher it was cloned from.
 //!   See the [`neural`] module for the model, the training loop, and the design
 //!   rationale.
+//! * [`StrongAgent`] — the strongest search-free agent. It shares the
+//!   [`NeuralAgent`]'s architecture and single-forward-pass speed, but its weights
+//!   are a *wider clone of the champion* fine-tuned by self-play RL that spars
+//!   against — and is checkpoint-selected to beat — the neural champion itself, so
+//!   it wins their head-to-head. See the [`strong`] module.
 //!
 //! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
@@ -64,9 +69,11 @@ pub mod montecarlo;
 pub mod neural;
 pub mod random;
 mod solver;
+pub mod strong;
 
 pub use advanced::AdvancedAgent;
 pub use heuristic::HeuristicAgent;
 pub use montecarlo::MonteCarloAgent;
 pub use neural::NeuralAgent;
 pub use random::RandomAgent;
+pub use strong::StrongAgent;

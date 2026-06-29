@@ -8,6 +8,7 @@ lead, gamble from behind), so a pure points metric could punish good play.
 cargo run -p euchre-eval -- heuristic random              # score one agent against another
 cargo run -p euchre-eval -- heuristic random --sprt       # stop early once the result is decided
 cargo run -p euchre-eval -- neural advanced               # the learned agent vs the teacher it was cloned from
+cargo run -p euchre-eval -- strong neural                 # the RL-tuned strong agent vs the neural champion it was trained to beat
 
 cargo run -p euchre-eval --bin euchre-tournament -- --all          # round-robin every built-in agent, ranked by Elo
 cargo run -p euchre-eval --bin euchre-tournament -- random heuristic advanced --format csv  # named pool, CSV output

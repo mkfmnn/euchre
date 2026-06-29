@@ -4,6 +4,12 @@
 # Retrain the neural agent's embedded weights (run in --release). Two stages:
 cargo run --release -p euchre-agents --example train_neural -- --teacher advanced --eval  # 1. behavioural-cloning warm start
 cargo run --release -p euchre-agents --example train_rl                                    # 2. self-play RL fine-tune (defaults reproduce the shipped weights; writes the same asset)
+
+# Retrain the strong agent's embedded weights (run in --release). Self-play RL that
+# spars against and is checkpoint-selected to beat the neural champion; iterate by
+# warm-starting from the previous round's output to compound the edge.
+cargo run --release -p euchre-agents --example train_strong                                                       # round 1, from the champion
+cargo run --release -p euchre-agents --example train_strong -- --warm-start euchre-agents/assets/euchre-strong.bin  # round 2+, iterating (writes the same asset)
 ```
 
 ## Agent implementations
@@ -43,3 +49,16 @@ cargo run --release -p euchre-agents --example train_rl                         
   self-play (both depend on the engine to generate games; the library does not).
   The `tests/neural.rs` integration test asserts the agent beats random, the
   heuristic, and the advanced teacher. The module docs hold the design rationale.
+- `StrongAgent` — the strongest search-free agent, built to **beat the neural
+  champion** while keeping its single-forward-pass speed. It shares the
+  `NeuralAgent` architecture *exactly* (same-sized nets) and reuses its inference
+  path verbatim; only the weights differ. They are produced by **self-play RL aimed
+  at the champion** (`examples/train_strong.rs`): warm-started from the champion's
+  own weights, the policy spars against the *frozen neural champion* with a hotter
+  sampling temperature and keeps the checkpoint that beats it by the most on a
+  fixed, training-disjoint deck band, iterated to compound the edge. Where
+  `train_rl` selected checkpoints on win-rate vs the `AdvancedAgent` (a proxy),
+  `train_strong` optimises the real objective directly, so the result wins the
+  head-to-head (~56% over 3000 games, McNemar p<0.0001; `cargo run -p euchre-eval --
+  strong neural`). Weights ship embedded (`assets/euchre-strong.bin`);
+  `tests/strong.rs` asserts it beats both random and the neural champion.
