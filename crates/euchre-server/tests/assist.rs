@@ -156,8 +156,9 @@ async fn play(addr: std::net::SocketAddr) -> Counts {
     panic!("connection closed before the match ended");
 }
 
-/// The recommended move must be one of the scored options and carry the highest
-/// score — the contract the assist UI relies on to outline the right control.
+/// The recommended move must be the top-scored option, and the probabilities
+/// must be a proper distribution (each in [0, 1], summing to 1) that peaks on
+/// that same move — the contract the assist UI relies on.
 fn assert_well_formed(recommended: &SuggestedAction, scores: &[ScoredAction]) {
     assert!(!scores.is_empty(), "a suggestion with no scored options");
     let best = scores
@@ -167,6 +168,29 @@ fn assert_well_formed(recommended: &SuggestedAction, scores: &[ScoredAction]) {
     assert_eq!(
         &best.action, recommended,
         "recommended move is not the top-scored option"
+    );
+
+    let total: f32 = scores.iter().map(|s| s.probability).sum();
+    assert!(
+        (total - 1.0).abs() < 1e-4,
+        "probabilities sum to {total}, not 1"
+    );
+    for s in scores {
+        assert!(
+            (0.0..=1.0).contains(&s.probability),
+            "probability {} out of range",
+            s.probability
+        );
+    }
+    // The highest score and the highest probability must agree (softmax is
+    // monotonic), so the outlined move is also the most probable.
+    let likeliest = scores
+        .iter()
+        .max_by(|a, b| a.probability.total_cmp(&b.probability))
+        .unwrap();
+    assert_eq!(
+        &likeliest.action, recommended,
+        "most probable move is not the recommended one"
     );
 }
 

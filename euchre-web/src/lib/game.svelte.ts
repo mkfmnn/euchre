@@ -91,6 +91,18 @@ function teamShort(team: TeamId): string {
   return team === 0 ? 'N/S' : 'E/W';
 }
 
+/**
+ * The hover tooltip for one assist option: the probability it is the best move
+ * (the headline number), with the raw network score underneath. Returns
+ * undefined when there is no hint, so no `title` attribute is rendered.
+ */
+function assistTip(scored: ScoredAction | undefined): string | undefined {
+  if (!scored) return undefined;
+  const pct = scored.probability * 100;
+  const shown = pct >= 1 ? `${Math.round(pct)}%` : '<1%';
+  return `Best play: ${shown}\nRaw score: ${scored.score.toFixed(2)}`;
+}
+
 /** Whether rendering this message advances the pacing clock (a visible beat). */
 function paceSetting(msg: ServerMsg): boolean {
   switch (msg.type) {
@@ -570,26 +582,23 @@ export class GameStore {
     this.suggestScores = null;
   }
 
-  /** The assist score for a card (play or discard), or null if none/assist off. */
-  scoreForCard(code: CardCode): number | null {
-    const m = this.suggestScores?.find(
+  /** The assist entry for a card (play or discard), or undefined if none. */
+  private scoredForCard(code: CardCode): ScoredAction | undefined {
+    return this.suggestScores?.find(
       (s) => (s.action.type === 'PLAY' || s.action.type === 'DISCARD') && s.action.card === code,
     );
-    return m ? m.score : null;
   }
 
-  /** The assist score for naming `suit` (with/without `alone`), or null. */
-  scoreForBid(suit: Suit, alone: boolean): number | null {
-    const m = this.suggestScores?.find(
+  /** The assist entry for naming `suit` (with/without `alone`), or undefined. */
+  private scoredForBid(suit: Suit, alone: boolean): ScoredAction | undefined {
+    return this.suggestScores?.find(
       (s) => s.action.type === 'BID' && s.action.suit === suit && s.action.alone === alone,
     );
-    return m ? m.score : null;
   }
 
-  /** The assist score for passing, or null. */
-  scoreForPass(): number | null {
-    const m = this.suggestScores?.find((s) => s.action.type === 'PASS');
-    return m ? m.score : null;
+  /** The assist entry for passing, or undefined. */
+  private scoredForPass(): ScoredAction | undefined {
+    return this.suggestScores?.find((s) => s.action.type === 'PASS');
   }
 
   /** Whether the agent's recommended move is to play or bury `code`. */
@@ -609,10 +618,19 @@ export class GameStore {
     return this.suggestRecommended?.type === 'PASS';
   }
 
-  /** A hover tooltip for a card's assist score, or undefined when there is none. */
+  /** A hover tooltip for a card's assist hint, or undefined when there is none. */
   cardTip(code: CardCode): string | undefined {
-    const s = this.scoreForCard(code);
-    return s === null ? undefined : `Net score: ${s.toFixed(2)}`;
+    return assistTip(this.scoredForCard(code));
+  }
+
+  /** A hover tooltip for a bid button's assist hint, or undefined. */
+  bidTip(suit: Suit, alone: boolean): string | undefined {
+    return assistTip(this.scoredForBid(suit, alone));
+  }
+
+  /** A hover tooltip for the pass button's assist hint, or undefined. */
+  passTip(): string | undefined {
+    return assistTip(this.scoredForPass());
   }
 
   private setBubble(seat: Player, text: string): void {

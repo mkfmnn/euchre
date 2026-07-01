@@ -111,10 +111,16 @@ export type SuggestedAction =
   | { type: 'DISCARD'; card: CardCode }
   | { type: 'PLAY'; card: CardCode };
 
-/** One option the assist net weighed, paired with its raw logit (higher is better). */
+/**
+ * One option the assist net weighed. `score` is the raw logit (higher is
+ * better, but unbounded); `probability` is the softmax of the scores over the
+ * legal options — the chance this option is the best move — and the values
+ * across one suggestion sum to 1.
+ */
 export interface ScoredAction {
   action: SuggestedAction;
   score: number;
+  probability: number;
 }
 
 /**

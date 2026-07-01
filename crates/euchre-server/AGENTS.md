@@ -35,10 +35,11 @@ code in a shared `Registry`. A client picks a table (or creates one) in its
   default), threaded from `main`/`serve`/`router` into `AppState.assist` and
   each `Room`. When on, a room holds a shared `NeuralAgent` and, right after
   every `Awaiting`, privately sends the active human a `Suggest` — the agent's
-  recommended move plus the raw network score of each option (`view::suggestion`
-  builds it; `NeuralAgent::score_*` supply the logits). The recommended move is
-  the top-scored option, so it matches what the bot would play. Off → no
-  `Suggest` is ever sent.
+  recommended move plus, per option, its raw network score and the probability
+  it is the best move (a softmax of the scores over the legal options).
+  `view::suggestion` builds it; `NeuralAgent::score_*` supply the logits. The
+  recommended move is the top-scored option, so it matches what the bot would
+  play. Off → no `Suggest` is ever sent.
 - **`view.rs`** — translation between protocol types and engine types, plus
   `suggestion()` for assist hints.
 - **`lib.rs`** — `router`/`serve` wire the `Registry` into an Axum app at `/ws`;

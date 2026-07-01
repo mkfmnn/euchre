@@ -167,13 +167,20 @@ pub enum SuggestedAction {
     Play { card: Card },
 }
 
-/// One option the assist net weighed, paired with its raw logit. Higher is
-/// better; the scores are not probabilities, so only their ordering and
-/// relative gaps are meaningful.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One option the assist net weighed, with both its raw logit and the
+/// probability it is the best move.
+///
+/// `score` is the network's raw output for the option (higher is better, but
+/// unbounded and not directly comparable across turns). `probability` is a
+/// softmax of the raw scores over just the legal options — the policy's own
+/// confidence that this option is best — and the `probability` values across
+/// one suggestion sum to 1, so they read naturally as "an 80% chance this is
+/// the best play".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredAction {
     pub action: SuggestedAction,
     pub score: f32,
+    pub probability: f32,
 }
 
 /// What kind of decision the active seat must make, carried by

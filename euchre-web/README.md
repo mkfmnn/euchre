@@ -58,9 +58,11 @@ the server asks that seat to discard.
 
 If the server runs with assist mode on (`EUCHRE_ASSIST=1`), it sends the player
 on turn a `SUGGEST` right after their `AWAITING`: the neural agent's recommended
-move plus the raw network score of every option. The UI outlines the
-recommended button or card in green and shows each option's score in a hover
-tooltip. With assist off the server sends no `SUGGEST` and the UI is unchanged.
+move plus, for every option, its raw network score and the probability it is the
+best move (a softmax of the scores). The UI outlines the recommended button or
+card in green and, on hover, shows that option's chance of being best (e.g.
+`Best play: 80%`) with the raw score beneath it. With assist off the server
+sends no `SUGGEST` and the UI is unchanged.
 
 ## Layout of the code
 
