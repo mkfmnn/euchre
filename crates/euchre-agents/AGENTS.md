@@ -62,3 +62,5 @@ cargo run --release -p euchre-agents --example train_strong -- --warm-start euch
   head-to-head (~56% over 3000 games, McNemar p<0.0001; `cargo run -p euchre-eval --
   strong neural`). Weights ship embedded (`assets/euchre-strong.bin`);
   `tests/strong.rs` asserts it beats both random and the neural champion.
+- `OpenAiAdvancedAgent` (`openai::advanced`) — stronger bounded-compute
+  strategy with richer hand evaluation and optional late-hand rollouts.

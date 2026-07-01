@@ -4,7 +4,7 @@
 //! [`Player::Bot`] slot. The engine and interface ship no strategies of their
 //! own; this crate supplies them.
 //!
-//! Five agents are provided:
+//! Three agents are provided:
 //!
 //! * [`RandomAgent`] — picks uniformly at random among the legal options at
 //!   every decision. A baseline opponent and a fuzz source.
@@ -31,6 +31,8 @@
 //!   are a *wider clone of the champion* fine-tuned by self-play RL that spars
 //!   against — and is checkpoint-selected to beat — the neural champion itself, so
 //!   it wins their head-to-head. See the [`strong`] module.
+//! * [`OpenAiAdvancedAgent`] — a stronger bounded-compute opponent with richer
+//!   bidding, tactical play, and small late-hand rollouts.
 //!
 //! All implement the [`Agent`] trait, so any of them drops into a driver:
 //!
@@ -67,6 +69,7 @@ pub mod advanced;
 pub mod heuristic;
 pub mod montecarlo;
 pub mod neural;
+pub mod openai;
 pub mod random;
 mod solver;
 pub mod strong;
@@ -75,5 +78,6 @@ pub use advanced::AdvancedAgent;
 pub use heuristic::HeuristicAgent;
 pub use montecarlo::MonteCarloAgent;
 pub use neural::NeuralAgent;
+pub use openai::OpenAiAdvancedAgent;
 pub use random::RandomAgent;
 pub use strong::StrongAgent;

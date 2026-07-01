@@ -13,7 +13,7 @@
 //! use euchre_eval::elo::{fit, leaderboard, EloOptions};
 //! use euchre_engine::GameConfig;
 //!
-//! let pool = ["random", "heuristic", "advanced"]
+//! let pool = ["random", "heuristic", "openai-advanced"]
 //!     .map(|n| builtin(n).unwrap());
 //! let results = run_round_robin(GameConfig::default(), &pool, 200, 0);
 //! for r in leaderboard(fit(&results.names, &results.wins_matrix(), &EloOptions::default())) {

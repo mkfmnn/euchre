@@ -56,7 +56,7 @@ pub mod stats;
 pub mod tournament;
 
 use euchre_agents::{
-    AdvancedAgent, HeuristicAgent, MonteCarloAgent, NeuralAgent, RandomAgent, StrongAgent,
+    AdvancedAgent, HeuristicAgent, MonteCarloAgent, NeuralAgent, OpenAiAdvancedAgent, RandomAgent, StrongAgent,
 };
 use euchre_interface::Agent;
 use runner::{AgentFactory, Contestant};
@@ -82,6 +82,9 @@ pub fn builtin(name: &str) -> Option<Contestant> {
         }),
         "neural" => Box::new(|_seed| Box::new(NeuralAgent::pretrained()) as Box<dyn Agent>),
         "strong" => Box::new(|_seed| Box::new(StrongAgent::pretrained()) as Box<dyn Agent>),
+        "openai-advanced" => {
+            Box::new(|seed| Box::new(OpenAiAdvancedAgent::with_seed(seed)) as Box<dyn Agent>)
+        }
         _ => return None,
     };
     Some(Contestant::new(name, factory))
@@ -95,5 +98,6 @@ pub const BUILTIN_AGENTS: &[&str] = &[
     "montecarlo",
     "montecarlo-play",
     "neural",
+    "openai-advanced",
     "strong",
 ];
