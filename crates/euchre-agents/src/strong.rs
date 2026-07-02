@@ -90,6 +90,30 @@ impl StrongAgent {
             inner: NeuralAgent::from_shared(PRETRAINED.clone()),
         }
     }
+
+    /// Scores each legal up-card bid by the network's raw logit, for an assist
+    /// UI (see [`NeuralAgent::score_bid_upcard`]). Shares the play path, so the
+    /// top-scored bid is exactly the one [`StrongAgent`] would make.
+    pub fn score_bid_upcard(&self, view: &GameView<'_>) -> Vec<(UpcardBid, f32)> {
+        self.inner.score_bid_upcard(view)
+    }
+
+    /// Scores each legal second-round call by its raw logit (see
+    /// [`NeuralAgent::score_bid_call`]).
+    pub fn score_bid_call(&self, view: &GameView<'_>) -> Vec<(CallBid, f32)> {
+        self.inner.score_bid_call(view)
+    }
+
+    /// Scores each card the dealer could bury by its raw logit (see
+    /// [`NeuralAgent::score_discard`]).
+    pub fn score_discard(&self, view: &GameView<'_>) -> Vec<(Card, f32)> {
+        self.inner.score_discard(view)
+    }
+
+    /// Scores each legal card by its raw logit (see [`NeuralAgent::score_play`]).
+    pub fn score_play(&self, view: &GameView<'_>, legal: &[Card]) -> Vec<(Card, f32)> {
+        self.inner.score_play(view, legal)
+    }
 }
 
 impl Default for StrongAgent {

@@ -6,10 +6,13 @@
 //! [`TurnHint`] for a pending [`Action`]. Keeping it in one module means the
 //! hidden-information rule (a discard reveals no card) has exactly one home.
 
+use euchre_agents::StrongAgent;
 use euchre_engine::{Action, Decision, Game};
-use euchre_interface::{CallBid, UpcardBid};
+use euchre_interface::{CallBid, GameView, Suit, UpcardBid};
 
-use crate::protocol::{ClientMsg, Player, PlayerView, PublicAction, TurnHint};
+use crate::protocol::{
+    ClientMsg, Player, PlayerView, PublicAction, ScoredAction, SuggestedAction, TurnHint,
+};
 
 /// Builds the owned [`PlayerView`] snapshot for the fixed `player` from the live
 /// game.
@@ -107,5 +110,97 @@ pub fn public_action(action: &Action, decision: &Decision) -> PublicAction {
         },
         Decision::Discard(_) => PublicAction::Discard,
         Decision::Play(card) => PublicAction::Play { card: *card },
+    }
+}
+
+/// Builds the assist suggestion for the pending `action` from `agent`'s view of
+/// the active seat: the recommended move plus, for every option, its raw score
+/// and the probability it is the best move.
+///
+/// The recommended move is the highest-scoring option, so it always matches the
+/// move the [`StrongAgent`] would actually make. Probabilities are a softmax of
+/// the raw scores over the legal options (the net trains its logits as exactly
+/// this masked softmax), so they sum to 1 and read as a confidence per option.
+/// Returns `None` for [`Action::HandComplete`], which asks no decision.
+pub fn suggestion(
+    agent: &StrongAgent,
+    action: &Action,
+    view: &GameView<'_>,
+) -> Option<(SuggestedAction, Vec<ScoredAction>)> {
+    let raw: Vec<(SuggestedAction, f32)> = match action {
+        Action::BidUpcard { .. } => {
+            let up_suit = view.up_card.suit;
+            agent
+                .score_bid_upcard(view)
+                .into_iter()
+                .map(|(bid, score)| (upcard_suggested(bid, up_suit), score))
+                .collect()
+        }
+        Action::BidCall { .. } => agent
+            .score_bid_call(view)
+            .into_iter()
+            .map(|(bid, score)| (call_suggested(bid), score))
+            .collect(),
+        Action::Discard { .. } => agent
+            .score_discard(view)
+            .into_iter()
+            .map(|(card, score)| (SuggestedAction::Discard { card }, score))
+            .collect(),
+        Action::Play { legal, .. } => agent
+            .score_play(view, legal)
+            .into_iter()
+            .map(|(card, score)| (SuggestedAction::Play { card }, score))
+            .collect(),
+        Action::HandComplete { .. } => return None,
+    };
+    if raw.is_empty() {
+        return None;
+    }
+    let probabilities = softmax(raw.iter().map(|(_, score)| *score));
+    let scores: Vec<ScoredAction> = raw
+        .into_iter()
+        .zip(probabilities)
+        .map(|((action, score), probability)| ScoredAction {
+            action,
+            score,
+            probability,
+        })
+        .collect();
+    let recommended = scores
+        .iter()
+        .max_by(|a, b| a.score.total_cmp(&b.score))?
+        .action
+        .clone();
+    Some((recommended, scores))
+}
+
+/// A numerically-stable softmax turning raw option scores into probabilities
+/// that sum to 1. This matches the net's own masked softmax, since the scores
+/// are exactly the logits of the legal options.
+fn softmax(scores: impl Iterator<Item = f32>) -> Vec<f32> {
+    let scores: Vec<f32> = scores.collect();
+    let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
+    let sum: f32 = exps.iter().sum();
+    exps.into_iter().map(|e| e / sum).collect()
+}
+
+/// Translates a first-round up-card bid into the wire suggestion vocabulary,
+/// naming the up-card's suit on an order-up so the UI can match the call.
+fn upcard_suggested(bid: UpcardBid, up_suit: Suit) -> SuggestedAction {
+    match bid {
+        UpcardBid::Pass => SuggestedAction::Pass,
+        UpcardBid::OrderUp { alone } => SuggestedAction::Bid {
+            suit: up_suit,
+            alone,
+        },
+    }
+}
+
+/// Translates a second-round call into the wire suggestion vocabulary.
+fn call_suggested(bid: CallBid) -> SuggestedAction {
+    match bid {
+        CallBid::Pass => SuggestedAction::Pass,
+        CallBid::Call { suit, alone } => SuggestedAction::Bid { suit, alone },
     }
 }

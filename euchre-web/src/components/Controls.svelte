@@ -21,21 +21,47 @@
         Order up the {upSuit ? SUIT_NAME[upSuit] : ''}
         {#if upSuit}<b class:red={isRed(upSuit)}>{SUIT_SYMBOL[upSuit]}</b>{/if}?
       </span>
-      <button class="primary" onclick={() => game.orderUp(false)}>Order up</button>
-      <button class="primary" onclick={() => game.orderUp(true)}>Order up alone</button>
+      <button
+        class="primary"
+        class:recommended={upSuit !== null && game.isRecommendedBid(upSuit, false)}
+        title={upSuit ? game.bidTip(upSuit, false) : undefined}
+        onclick={() => game.orderUp(false)}>Order up</button
+      >
+      <button
+        class="primary"
+        class:recommended={upSuit !== null && game.isRecommendedBid(upSuit, true)}
+        title={upSuit ? game.bidTip(upSuit, true) : undefined}
+        onclick={() => game.orderUp(true)}>Order up alone</button
+      >
       {#if game.hint.may_pass}
-        <button class="ghost" onclick={() => game.pass()}>Pass</button>
+        <button
+          class="ghost"
+          class:recommended={game.isRecommendedPass()}
+          title={game.passTip()}
+          onclick={() => game.pass()}>Pass</button
+        >
       {/if}
     {:else}
       <span class="prompt">Name trump:</span>
       {#each callSuits as s (s)}
-        <button class="suit" class:red={isRed(s)} onclick={() => game.bid(s, alone)}>
+        <button
+          class="suit"
+          class:red={isRed(s)}
+          class:recommended={game.isRecommendedBid(s, alone)}
+          title={game.bidTip(s, alone)}
+          onclick={() => game.bid(s, alone)}
+        >
           {SUIT_SYMBOL[s]}
         </button>
       {/each}
       <label class="alone"><input type="checkbox" bind:checked={alone} /> alone</label>
       {#if game.hint.may_pass}
-        <button class="ghost" onclick={() => game.pass()}>Pass</button>
+        <button
+          class="ghost"
+          class:recommended={game.isRecommendedPass()}
+          title={game.passTip()}
+          onclick={() => game.pass()}>Pass</button
+        >
       {/if}
     {/if}
   </div>
@@ -90,6 +116,12 @@
   }
   button.suit.red {
     color: #c0392b;
+  }
+  /* The assist agent's recommended bid: a green ring around the button. */
+  button.recommended {
+    outline: 3px solid #2fbf71;
+    outline-offset: 2px;
+    box-shadow: 0 0 10px rgba(47, 191, 113, 0.7);
   }
   button:hover {
     filter: brightness(1.08);

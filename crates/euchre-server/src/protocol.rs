@@ -133,6 +133,54 @@ pub enum ServerMsg {
     /// A full snapshot of the game from this client's seat, for join/reconnect
     /// resync. Defined for forward use; the walking skeleton sends it on join.
     Sync { view: PlayerView },
+    /// An assist hint for the active player: the move the strong agent
+    /// recommends and the raw network score of every option it weighed. Sent —
+    /// only when the server runs with assist mode enabled (the `EUCHRE_ASSIST`
+    /// environment variable) — privately to the seat on turn, right after the
+    /// matching [`Awaiting`](ServerMsg::Awaiting). A client outlines the
+    /// `recommended` option and surfaces each option's `score` on hover; with
+    /// assist disabled no `Suggest` is ever sent.
+    Suggest {
+        player: Player,
+        recommended: SuggestedAction,
+        scores: Vec<ScoredAction>,
+    },
+}
+
+/// A move the assist net can recommend or score, spelled in the client's own
+/// action vocabulary so the UI can match it straight to a button or card.
+///
+/// Unlike the public [`PublicAction::Discard`], a [`SuggestedAction::Discard`]
+/// names its card: a suggestion is private to the seat it is sent to, so there
+/// is no hidden information to protect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SuggestedAction {
+    /// Name `suit` as trump (order up in round one, call in round two),
+    /// optionally alone.
+    Bid { suit: Suit, alone: bool },
+    /// Decline to bid.
+    Pass,
+    /// Bury `card` as the dealer.
+    Discard { card: Card },
+    /// Play `card` to the trick.
+    Play { card: Card },
+}
+
+/// One option the assist net weighed, with both its raw logit and the
+/// probability it is the best move.
+///
+/// `score` is the network's raw output for the option (higher is better, but
+/// unbounded and not directly comparable across turns). `probability` is a
+/// softmax of the raw scores over just the legal options — the policy's own
+/// confidence that this option is best — and the `probability` values across
+/// one suggestion sum to 1, so they read naturally as "an 80% chance this is
+/// the best play".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoredAction {
+    pub action: SuggestedAction,
+    pub score: f32,
+    pub probability: f32,
 }
 
 /// What kind of decision the active seat must make, carried by

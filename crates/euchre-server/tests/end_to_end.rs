@@ -19,7 +19,7 @@ async fn one_human_and_three_bots_play_a_full_match() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        euchre_server::serve(listener, GameConfig::default())
+        euchre_server::serve(listener, GameConfig::default(), false)
             .await
             .unwrap();
     });

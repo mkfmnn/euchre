@@ -41,12 +41,19 @@ use room::{Room, RoomMsg};
 /// never across an `.await`.
 pub type Registry = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<RoomMsg>>>>;
 
-/// Shared state handed to the websocket handler: the table registry and the
-/// game config to stamp on any newly created table.
+/// Shared state handed to the websocket handler: the table registry, the game
+/// config to stamp on any newly created table, and whether assist mode is on.
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Registry,
     pub config: GameConfig,
+    /// When set, each table sends the active human a [`Suggest`] hint from the
+    /// strong agent after every [`Awaiting`]. Toggled by the server operator via
+    /// the `EUCHRE_ASSIST` environment variable.
+    ///
+    /// [`Suggest`]: protocol::ServerMsg::Suggest
+    /// [`Awaiting`]: protocol::ServerMsg::Awaiting
+    pub assist: bool,
 }
 
 impl AppState {
@@ -67,23 +74,35 @@ impl AppState {
             }
         };
         tables.insert(code.clone(), room_tx.clone());
-        tokio::spawn(Room::new(self.config, code.clone(), self.registry.clone(), room_rx).run());
+        tokio::spawn(
+            Room::new(
+                self.config,
+                self.assist,
+                code.clone(),
+                self.registry.clone(),
+                room_rx,
+            )
+            .run(),
+        );
         (code, room_tx)
     }
 }
 
-/// Builds the Axum app with an empty table registry.
-pub fn router(config: GameConfig) -> Router {
+/// Builds the Axum app with an empty table registry. `assist` enables the
+/// neural-agent [`Suggest`](protocol::ServerMsg::Suggest) hints.
+pub fn router(config: GameConfig, assist: bool) -> Router {
     let state = AppState {
         registry: Arc::new(Mutex::new(HashMap::new())),
         config,
+        assist,
     };
     Router::new()
         .route("/ws", any(conn::ws_handler))
         .with_state(state)
 }
 
-/// Serves the app on an already-bound listener until the process ends.
-pub async fn serve(listener: TcpListener, config: GameConfig) -> std::io::Result<()> {
-    axum::serve(listener, router(config)).await
+/// Serves the app on an already-bound listener until the process ends. `assist`
+/// enables the neural-agent [`Suggest`](protocol::ServerMsg::Suggest) hints.
+pub async fn serve(listener: TcpListener, config: GameConfig, assist: bool) -> std::io::Result<()> {
+    axum::serve(listener, router(config, assist)).await
 }

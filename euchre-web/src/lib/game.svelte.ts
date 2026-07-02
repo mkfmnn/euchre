@@ -30,9 +30,11 @@ import type {
   HandScore,
   Player,
   PublicAction,
+  ScoredAction,
   Seat,
   SeatInfo,
   ServerMsg,
+  SuggestedAction,
   Suit,
   TeamId,
   TurnHint,
@@ -89,6 +91,18 @@ function teamShort(team: TeamId): string {
   return team === 0 ? 'N/S' : 'E/W';
 }
 
+/**
+ * The hover tooltip for one assist option: the probability it is the best move
+ * (the headline number), with the raw network score underneath. Returns
+ * undefined when there is no hint, so no `title` attribute is rendered.
+ */
+function assistTip(scored: ScoredAction | undefined): string | undefined {
+  if (!scored) return undefined;
+  const pct = scored.probability * 100;
+  const shown = pct >= 1 ? `${Math.round(pct)}%` : '<1%';
+  return `Best play: ${shown}\nRaw score: ${scored.score.toFixed(2)}`;
+}
+
 /** Whether rendering this message advances the pacing clock (a visible beat). */
 function paceSetting(msg: ServerMsg): boolean {
   switch (msg.type) {
@@ -140,6 +154,16 @@ export class GameStore {
   whoseTurn = $state<Player | null>(null);
   hint = $state<TurnHint | null>(null);
   legal = $state<CardCode[] | null>(null);
+
+  // --- assist mode --------------------------------------------------------
+  // Populated by a server `SUGGEST` (only when the server runs with assist mode
+  // on, and only for our own turn). The UI outlines the recommended option and
+  // shows each option's raw network score on hover. Both stay null with assist
+  // off, leaving the board unchanged.
+  /** The move the assist agent recommends this turn, or null. */
+  suggestRecommended = $state<SuggestedAction | null>(null);
+  /** Every option the agent scored this turn, or null. */
+  suggestScores = $state<ScoredAction[] | null>(null);
 
   // --- bookkeeping --------------------------------------------------------
   scores = $state<TeamScores>({ north_south: 0, east_west: 0 });
@@ -391,12 +415,15 @@ export class GameStore {
         this.cardsLeft = playerArray(() => 5);
         this.bubbles = playerArray<ActionBubble | null>(() => null);
         this.banner = null;
+        this.clearSuggestion();
         break;
       }
       case 'AWAITING': {
         this.whoseTurn = msg.player;
         this.hint = msg.hint;
         this.legal = msg.player === this.mySeat ? (msg.legal ?? null) : null;
+        // Drop any previous hint; a fresh SUGGEST (if any) follows immediately.
+        this.clearSuggestion();
         if (msg.hint.kind === 'BID') {
           this.lastBidUp = msg.hint.up;
           if (!msg.hint.up) this.upCardLive = false; // round two: up-card turned down
@@ -437,6 +464,15 @@ export class GameStore {
       }
       case 'ERROR': {
         this.flashToast(msg.message);
+        break;
+      }
+      case 'SUGGEST': {
+        // Always arrives right after our own AWAITING; ignore any stray hint for
+        // another seat.
+        if (msg.player === this.mySeat) {
+          this.suggestRecommended = msg.recommended;
+          this.suggestScores = msg.scores;
+        }
         break;
       }
     }
@@ -537,6 +573,64 @@ export class GameStore {
     this.whoseTurn = null;
     this.hint = null;
     this.legal = null;
+    this.clearSuggestion();
+  }
+
+  // --- assist mode --------------------------------------------------------
+  private clearSuggestion(): void {
+    this.suggestRecommended = null;
+    this.suggestScores = null;
+  }
+
+  /** The assist entry for a card (play or discard), or undefined if none. */
+  private scoredForCard(code: CardCode): ScoredAction | undefined {
+    return this.suggestScores?.find(
+      (s) => (s.action.type === 'PLAY' || s.action.type === 'DISCARD') && s.action.card === code,
+    );
+  }
+
+  /** The assist entry for naming `suit` (with/without `alone`), or undefined. */
+  private scoredForBid(suit: Suit, alone: boolean): ScoredAction | undefined {
+    return this.suggestScores?.find(
+      (s) => s.action.type === 'BID' && s.action.suit === suit && s.action.alone === alone,
+    );
+  }
+
+  /** The assist entry for passing, or undefined. */
+  private scoredForPass(): ScoredAction | undefined {
+    return this.suggestScores?.find((s) => s.action.type === 'PASS');
+  }
+
+  /** Whether the agent's recommended move is to play or bury `code`. */
+  isRecommendedCard(code: CardCode): boolean {
+    const r = this.suggestRecommended;
+    return !!r && (r.type === 'PLAY' || r.type === 'DISCARD') && r.card === code;
+  }
+
+  /** Whether the agent's recommended move is to name `suit` (matching `alone`). */
+  isRecommendedBid(suit: Suit, alone: boolean): boolean {
+    const r = this.suggestRecommended;
+    return !!r && r.type === 'BID' && r.suit === suit && r.alone === alone;
+  }
+
+  /** Whether the agent's recommended move is to pass. */
+  isRecommendedPass(): boolean {
+    return this.suggestRecommended?.type === 'PASS';
+  }
+
+  /** A hover tooltip for a card's assist hint, or undefined when there is none. */
+  cardTip(code: CardCode): string | undefined {
+    return assistTip(this.scoredForCard(code));
+  }
+
+  /** A hover tooltip for a bid button's assist hint, or undefined. */
+  bidTip(suit: Suit, alone: boolean): string | undefined {
+    return assistTip(this.scoredForBid(suit, alone));
+  }
+
+  /** A hover tooltip for the pass button's assist hint, or undefined. */
+  passTip(): string | undefined {
+    return assistTip(this.scoredForPass());
   }
 
   private setBubble(seat: Player, text: string): void {
