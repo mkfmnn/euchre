@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use euchre_agents::{HeuristicAgent, NeuralAgent};
+use euchre_agents::{HeuristicAgent, StrongAgent};
 use euchre_engine::{Action, Decision, Game, GameConfig};
 use euchre_interface::{Agent, GameView, Seat};
 use rand::rngs::ChaCha12Rng;
@@ -103,10 +103,10 @@ pub struct Room {
     seats: [SeatSlot; 4],
     /// Used to compute a legal move when a human times out or disconnects.
     fallback: HeuristicAgent,
-    /// The neural agent backing assist mode, or `None` when assist is off. When
+    /// The strong agent backing assist mode, or `None` when assist is off. When
     /// set, the active human gets a [`ServerMsg::Suggest`] after each
     /// [`ServerMsg::Awaiting`]. Shares the embedded model, so it is cheap to hold.
-    assist: Option<NeuralAgent>,
+    assist: Option<StrongAgent>,
     rx: mpsc::UnboundedReceiver<RoomMsg>,
 }
 
@@ -143,7 +143,7 @@ impl Room {
                 SeatSlot::Empty,
             ],
             fallback: HeuristicAgent::new(),
-            assist: assist.then(NeuralAgent::pretrained),
+            assist: assist.then(StrongAgent::pretrained),
             rx,
         }
     }
@@ -573,7 +573,7 @@ impl Room {
         self.suggest_to(action, active);
     }
 
-    /// In assist mode, sends the active human the neural agent's recommendation
+    /// In assist mode, sends the active human the strong agent's recommendation
     /// and per-option scores for the pending `action`. A no-op when assist is
     /// off, the seat on turn is a bot, or the agent has no decision to score.
     fn suggest_to(&self, action: &Action, active: Seat) {
@@ -649,7 +649,7 @@ fn action_seat(action: &Action) -> Seat {
 fn bot_for(player: usize) -> SeatSlot {
     SeatSlot::Bot {
         name: format!("Bot {}", player_name(player)),
-        agent: Box::new(HeuristicAgent::new()),
+        agent: Box::new(StrongAgent::pretrained()),
     }
 }
 

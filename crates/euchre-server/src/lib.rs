@@ -48,7 +48,7 @@ pub struct AppState {
     pub registry: Registry,
     pub config: GameConfig,
     /// When set, each table sends the active human a [`Suggest`] hint from the
-    /// neural agent after every [`Awaiting`]. Toggled by the server operator via
+    /// strong agent after every [`Awaiting`]. Toggled by the server operator via
     /// the `EUCHRE_ASSIST` environment variable.
     ///
     /// [`Suggest`]: protocol::ServerMsg::Suggest

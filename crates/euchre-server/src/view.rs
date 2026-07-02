@@ -6,7 +6,7 @@
 //! [`TurnHint`] for a pending [`Action`]. Keeping it in one module means the
 //! hidden-information rule (a discard reveals no card) has exactly one home.
 
-use euchre_agents::NeuralAgent;
+use euchre_agents::StrongAgent;
 use euchre_engine::{Action, Decision, Game};
 use euchre_interface::{CallBid, GameView, Suit, UpcardBid};
 
@@ -118,12 +118,12 @@ pub fn public_action(action: &Action, decision: &Decision) -> PublicAction {
 /// and the probability it is the best move.
 ///
 /// The recommended move is the highest-scoring option, so it always matches the
-/// move the [`NeuralAgent`] would actually make. Probabilities are a softmax of
+/// move the [`StrongAgent`] would actually make. Probabilities are a softmax of
 /// the raw scores over the legal options (the net trains its logits as exactly
 /// this masked softmax), so they sum to 1 and read as a confidence per option.
 /// Returns `None` for [`Action::HandComplete`], which asks no decision.
 pub fn suggestion(
-    agent: &NeuralAgent,
+    agent: &StrongAgent,
     action: &Action,
     view: &GameView<'_>,
 ) -> Option<(SuggestedAction, Vec<ScoredAction>)> {

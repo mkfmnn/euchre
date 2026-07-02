@@ -133,7 +133,7 @@ pub enum ServerMsg {
     /// A full snapshot of the game from this client's seat, for join/reconnect
     /// resync. Defined for forward use; the walking skeleton sends it on join.
     Sync { view: PlayerView },
-    /// An assist hint for the active player: the move the neural agent
+    /// An assist hint for the active player: the move the strong agent
     /// recommends and the raw network score of every option it weighed. Sent —
     /// only when the server runs with assist mode enabled (the `EUCHRE_ASSIST`
     /// environment variable) — privately to the seat on turn, right after the

@@ -58,7 +58,7 @@
   .slot:first-child {
     margin-left: 0;
   }
-  /* The neural agent's recommended card: a green ring, lifted above its
+  /* The assist agent's recommended card: a green ring, lifted above its
      neighbours so the overlap never clips it. */
   .slot.recommended {
     position: relative;

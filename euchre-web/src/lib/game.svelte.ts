@@ -160,7 +160,7 @@ export class GameStore {
   // on, and only for our own turn). The UI outlines the recommended option and
   // shows each option's raw network score on hover. Both stay null with assist
   // off, leaving the board unchanged.
-  /** The move the neural agent recommends this turn, or null. */
+  /** The move the assist agent recommends this turn, or null. */
   suggestRecommended = $state<SuggestedAction | null>(null);
   /** Every option the agent scored this turn, or null. */
   suggestScores = $state<ScoredAction[] | null>(null);

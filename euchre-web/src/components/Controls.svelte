@@ -117,7 +117,7 @@
   button.suit.red {
     color: #c0392b;
   }
-  /* The neural agent's recommended bid: a green ring around the button. */
+  /* The assist agent's recommended bid: a green ring around the button. */
   button.recommended {
     outline: 3px solid #2fbf71;
     outline-offset: 2px;
